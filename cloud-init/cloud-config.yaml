@@ -14,7 +14,7 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
     ssh_authorized_keys:
-      - ${ghost_admin_ssh_key}
+      - ${ghost_admin_ssh_public_key}
 
 # Update package lists
 package_update: true
@@ -56,7 +56,8 @@ write_files:
   content: |
     # ghost.sh script to setup the configuration file for Ghost
 
-    instance_public_ip=$(curl -s http://checkip.amazonaws.com)
+    #instance_public_ip=$(curl -s http://checkip.amazonaws.com)
+    instance_public_ip=${ghost_elastic_ip}
     ghost_blog_domain=${ghost_blog_domain}
     ghost_blog_ip=""
 
@@ -154,7 +155,7 @@ runcmd:
   - rm -rf /home/ghost-mgr/tmp/0[1-3]_ghost*.*
 
 
-  # List installed version numbers
+  # TODO: Write out installed version numbers to a file
   - nginx -v
   - certbot --version
   - mysql --version

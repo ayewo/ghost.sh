@@ -15,10 +15,22 @@ variable "ghost_admin_email" {
   default     = "ghost.sh@ayewo.com"
 }
 
-variable "ghost_admin_ssh_key" {
+variable "ghost_admin_ssh_public_key" {
   description = "This is path to your public key file for passwordless authentication over SSH to your Ghost server."
   type        = string
   default     = "../ghost.sh_ssh/demo_ssh_key.pub"
+}
+
+variable "ghost_admin_ssh_private_key" {
+  description = "This is path to your private key file for passwordless authentication over SSH to your Ghost server."
+  type        = string
+  default     = "../ghost.sh_ssh/demo_ssh_key"
+}
+
+variable "ghost_admin" {
+  description = "This is Linux user admin for passwordless authentication over SSH to your Ghost server."
+  type        = string
+  default     = "ghost-mgr"
 }
 
 variable "ghost_blog_domain" {

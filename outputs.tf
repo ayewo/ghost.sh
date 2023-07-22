@@ -91,13 +91,13 @@ output "instance_sg_rule4_name" {
 output "instance_ghost_mysql_password" {
   description = "Terraform-generated MySQL password for Ghost on the EC2 instance."
   value       = random_id.ghost_mysql_password.id
-  sensitive = true
+  sensitive   = true
 }
 
 output "instance_ghost_admin_password" {
   description = "Terraform-generated password for the Ghost Admin on the EC2 instance."
   value       = random_id.ghost_admin_password.id
-  sensitive = true
+  sensitive   = true
 }
 
 
