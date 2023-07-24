@@ -101,7 +101,7 @@ resource "aws_instance" "web_server" {
       # Because of this order, this remote-exec SSH connection eventually times out then fails (because the default timeout is 5m30s < 6m50s).
       # Rather than wait ~7mins for the /Elastic IP/ to be associated, this workaround uses the instance's /public IP/ (while it is still available)
       # to connect immediately for SSH access.
-      
+
       # host        = aws_eip.eip.public_ip
       host = self.public_ip
     }

@@ -18,13 +18,13 @@ variable "ghost_admin_email" {
 variable "ghost_admin_ssh_public_key" {
   description = "This is path to your public key file for passwordless authentication over SSH to your Ghost server."
   type        = string
-  default     = "../ghost.sh_ssh/demo_ssh_key.pub"
+  default     = "../ghost.sh_ssh/ghost_admin_ssh_key.pub"
 }
 
 variable "ghost_admin_ssh_private_key" {
   description = "This is path to your private key file for passwordless authentication over SSH to your Ghost server."
   type        = string
-  default     = "../ghost.sh_ssh/demo_ssh_key"
+  default     = "../ghost.sh_ssh/ghost_admin_ssh_key"
 }
 
 variable "ghost_admin" {
