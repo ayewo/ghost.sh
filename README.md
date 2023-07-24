@@ -2,9 +2,12 @@
 [![Twitter Follow](https://img.shields.io/twitter/follow/ayewo_?style=social)](https://twitter.com/ayewo_)
 [![GitHub Repo stars](https://img.shields.io/github/stars/ayewo/ghost.sh?style=social)](https://github.com/ayewo/ghost.sh)
 
-`ghost.sh` is a 1-Click solution for self-hosting Ghost on [Ubuntu Linux](https://ghost.org/docs/install/ubuntu/). 
+`ghost.sh` is a 1-Click solution that makes it a breeze ⚡️ to self-host Ghost on [Ubuntu Linux](https://ghost.org/docs/install/ubuntu/). 
 
+## Why?
 Ghost offers an easy-to-use [1-Click App](https://marketplace.digitalocean.com/apps/ghost) on the DigitalOcean Marketplace but the 1-Click App is not available on other cloud providers. `ghost.sh` plans to fix that by being a 1-Click solution for installing Ghost on any cloud provider, starting with AWS. 
+
+You can read more about what motivated me to start this project on my blog: [ghost.sh](https://ayewo.com/ghost-sh/).
 
 ## Dependencies
 You will need to have to following CLI tools installed:
