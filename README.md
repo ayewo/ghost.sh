@@ -8,12 +8,12 @@ Ghost offers an easy-to-use [1-Click App](https://marketplace.digitalocean.com/a
 
 ## Dependencies
 You will need to have to following CLI tools installed:
-- Terraform 
+- Terraform (tested on v1.5.2+)
 
 ## Getting Started
-1. Install Terraform on your machine.
+1. Install [Terraform](https://www.terraform.io) on your machine.
 
-On macOS:
+On macOS use [`brew`](https://formulae.brew.sh/formula/terraform#default):
 ```bash
 brew tap hashicorp/tap
 brew install hashicorp/tap/terraform
@@ -22,7 +22,7 @@ terraform --version
 Terraform v1.5.2
 on darwin_amd64
 ```
-On Ubuntu:
+On Ubuntu use [`snap`](https://snapcraft.io/terraform):
 ```bash
 sudo snap install terraform --classic
 
@@ -40,9 +40,9 @@ git clone https://github.com/ayewo/ghost.sh .
 3. Create an SSH for administering the instance that will be created by Terraform. 
 ```bash
 mkdir -p ~/ghost.sh_ssh/
-ssh-keygen -t ed25519 -C "ghost-mgr@ghost.sh" -f ./../ghost.sh_ssh/ghost_admin_ssh_key
+ssh-keygen -t ed25519 -C "ghost-mgr@ghost.sh" -f ~/ghost.sh_ssh/ghost_admin_ssh_key
 ```
-Alternatively, if you want to use your existing SSH key, you can specify the path to it by creating a file `terraform.tfvars` inside the `~/ghost.sh` folder:
+Alternatively, if you have an existing SSH key, you can specify it inside `terraform.tfvars`. Please create your `terraform.tfvars` inside the `~/ghost.sh` folder:
 ```bash
 cat << EOF > terraform.tfvars
 ghost_admin_email           = "admin@example.com"
@@ -61,6 +61,12 @@ aws_access_key_id=AKIAIOSFODNN7EXAMPLE
 aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 EOF
 ```
+Alternatively, you can use environment variables:
+```bash
+export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
 5. Next run Terraform:
 ```bash
 terraform init
