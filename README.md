@@ -101,4 +101,4 @@ The name `ghost.sh` can be expanded to mean "Ghost **S**elf **H**osting".
 
 Ghost is a trademark of The Ghost Foundation. *This project is not affiliated with The Ghost Foundation.*
 
-[^iam-note]: ☂️ Please use an IAM user with the ability to create resources in your AWS organization otherwise you will receive the dreaded *"UnauthorizedOperation: You are not authorized to perform this operation"* error and the deploymnent will fail.
+[^iam-note]: ☂️ Please use an IAM user with the ability to create resources in your AWS organization, otherwise you will receive the dreaded `"UnauthorizedOperation: You are not authorized to perform this operation"` error and the deploymnent will fail.
