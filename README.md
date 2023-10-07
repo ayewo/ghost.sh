@@ -97,7 +97,7 @@ The name `ghost.sh` can be expanded to mean "Ghost **S**elf **H**osting".
 
 
 ## License
-[MIT License](LICENSE)
+Licensed under the [MIT License](LICENSE).
 
 Ghost is a trademark of The Ghost Foundation. *This project is not affiliated with The Ghost Foundation.*
 
