@@ -47,6 +47,18 @@ write_files:
     ghost_admin_password=${ghost_admin_password}
   permissions: '0400'
   owner: root:root
+- path: /run/ghost.sh-mysql-low-memory.cnf
+  content: |
+    # ghost.sh: keep MySQL's resident footprint small enough to share a 1 GB
+    # host with Ghost, Node and nginx. performance_schema is the costly one --
+    # a few hundred MB of the default allocation, and nothing a blog reads.
+    # The zz- prefix makes this load after Ubuntu's own mysqld.cnf.
+    [mysqld]
+    performance_schema      = OFF
+    innodb_buffer_pool_size = 128M
+    max_connections         = 40
+  permissions: '0644'
+  owner: root:root
 - path: /run/01_ghost-mysql-dba.sql
   content: |
     # mysql dba user credentials for ghost
@@ -317,7 +329,10 @@ runcmd:
   - chown -R ghost-mgr:ghost-mgr /home/ghost-mgr/tmp/
   - [su, ghost-mgr, -c, "cd /var/www/ghost && ghost install ${ghost_version} --no-setup"]
   
-  # mysql config
+  # mysql config. Trim MySQL before creating the database so that it starts as
+  # it will go on to run.
+  - install -o root -g root -m 0644 /run/ghost.sh-mysql-low-memory.cnf /etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf
+  - systemctl restart mysql
   - mysql < /home/ghost-mgr/tmp/01_ghost-mysql-dba.sql > /home/ghost-mgr/tmp/01_ghost-mysql-dba.out
   
   # ghost config

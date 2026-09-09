@@ -10,7 +10,7 @@
 
 
 ## Why?
-Ghost offers an easy-to-use [1-Click App](https://marketplace.digitalocean.com/apps/ghost) on the DigitalOcean Marketplace but the 1-Click App is not available on other cloud providers. `ghost.sh` plans to fix that by being a 1-Click solution for installing Ghost on any cloud provider, starting with AWS. 
+Ghost offers an easy-to-use [1-Click App](https://marketplace.digitalocean.com/apps/ghost) on the DigitalOcean Marketplace but the 1-Click App is not available on other cloud providers. `ghost.sh` plans to fix that by being a 1-Click solution for installing Ghost on any cloud provider. **AWS** and **DigitalOcean** are supported today; pick one with `cloud_provider`.
 
 You can read more about what motivated me to start this project on my blog: [ghost.sh](https://ayewo.com/ghost-sh/).
 
@@ -67,7 +67,28 @@ Install [Terraform](https://www.terraform.io) on your machine.
     EOF
     ```
 
-3. **Specify your AWS `credentials`**[^iam-note] inside `~/.aws/credentials`: 
+3. **Choose a cloud** in `terraform.tfvars`. `aws` is the default, so this step is only needed for DigitalOcean:
+
+    ```bash
+    echo 'cloud_provider = "digitalocean"' >> terraform.tfvars
+    ```
+
+4. **Specify your cloud credentials.**
+
+    <details open>
+    <summary><strong>DigitalOcean</strong></summary>
+
+    A [personal access token](https://cloud.digitalocean.com/account/api/tokens) with write scope, kept in the environment rather than in `terraform.tfvars`:
+
+    ```bash
+    export DIGITALOCEAN_TOKEN=dop_v1_<64 hex>
+    ```
+    </details>
+
+    <details>
+    <summary><strong>AWS</strong></summary>
+
+    Your `credentials`[^iam-note] inside `~/.aws/credentials`: 
 
     ```bash
     mkdir -p ~/.aws && cat << EOF > ~/.aws/credentials
@@ -83,13 +104,34 @@ Install [Terraform](https://www.terraform.io) on your machine.
     export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
     export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
     ```
+    </details>
 
-4. **Run the code**:
+    You only need credentials for the cloud you picked. Every resource for the other one is `count = 0`, and Terraform does not ask a provider for credentials it has no resources to manage.
+
+5. **Run the code**:
     ```bash
     terraform init
     terraform apply -auto-approve
     ```
 
+
+
+## Choosing a cloud
+`cloud_provider` selects the target; everything else about the blog is identical either way.
+
+| | `aws` (default) | `digitalocean` |
+|---|---|---|
+| Server | `aws_instance`, `t3.small` | `digitalocean_droplet`, `s-1vcpu-1gb` |
+| Size variable | `instance_type` | `do_droplet_size` |
+| Region | `region`, default `eu-west-2` | `do_region`, default `lon1` |
+| Image | newest Ubuntu 24.04 LTS AMI, or `ami_id` | `do_image`, default `ubuntu-24-04-x64` |
+| Static address | `aws_eip` | `digitalocean_reserved_ip` |
+| Firewall | `aws_security_group` | `digitalocean_firewall` |
+| Credentials | `~/.aws/credentials` or `AWS_*` | `DIGITALOCEAN_TOKEN` or `do_token` |
+
+`s-1vcpu-1gb` is Ghost's stated 1 GB minimum rather than a comfortable amount. Two things make it work: the 2 GB swapfile, and a MySQL drop-in at `/etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf` that turns `performance_schema` off and caps the buffer pool and connection count. Step up to `s-1vcpu-2gb` if you plan to run much beyond a blog.
+
+Outputs are named for the cloud that produced them — `instance_*` on AWS, `droplet_*` on DigitalOcean — and the ones belonging to the cloud you did not pick read `null`. The provider-neutral values are `server_public_ip`, `server_ssh_command` and `server_blog_url`.
 
 
 ## What you get

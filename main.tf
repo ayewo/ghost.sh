@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.100"
+    }
     local = {
       source  = "hashicorp/local"
       version = "~> 2.5"
@@ -21,11 +25,22 @@ provider "aws" {
   region = var.region
 }
 
+# Left null, the provider reads DIGITALOCEAN_TOKEN from the environment. An
+# AWS-only run needs no token at all: every DigitalOcean resource below is
+# count = 0, and Terraform does not ask a provider for credentials it has no
+# resources to manage.
+provider "digitalocean" {
+  token = var.do_token
+}
+
 locals {
   instance_name     = "${var.prefix}_${var.instance_name}"
   path_public_key   = "${path.module}/${var.ghost_admin_ssh_public_key}"
   path_private_key  = "${path.module}/${var.ghost_admin_ssh_private_key}"
   path_cloud_config = "${path.module}/cloud-init/cloud-config.yaml"
+
+  on_aws          = var.cloud_provider == "aws"
+  on_digitalocean = var.cloud_provider == "digitalocean"
 }
 
 data "local_file" "ghost_admin_ssh_public_key" {
@@ -36,14 +51,18 @@ data "local_sensitive_file" "ghost_admin_ssh_private_key" {
   filename = local.path_private_key
 }
 
-
 locals {
+  # Both providers hand out a floating address that can be reserved before the
+  # server exists. That ordering is what lets the address be baked into the
+  # cloud-config, which needs it to derive the nip.io fallback domain.
+  public_ip = local.on_aws ? one(aws_eip.eip[*].public_ip) : one(digitalocean_reserved_ip.eip[*].ip_address)
+
   cloud_config = templatefile(local.path_cloud_config, {
     ghost_admin_email          = var.ghost_admin_email
     ghost_admin_ssh_public_key = data.local_file.ghost_admin_ssh_public_key.content
     ghost_blog_domain          = var.ghost_blog_domain
     ghost_blog_name            = var.ghost_blog_name
-    ghost_elastic_ip           = aws_eip.eip.public_ip
+    ghost_elastic_ip           = local.public_ip
     ghost_mysql_password       = random_id.ghost_mysql_password.id
     ghost_admin_password       = random_id.ghost_admin_password.id
     ghost_ssl_staging          = tostring(var.ghost_ssl_staging)
@@ -51,85 +70,14 @@ locals {
     ghost_version              = var.ghost_version
     ghost_cli_version          = var.ghost_cli_version
   })
-}
 
-# Canonical's own account. Pinning the owner is what stops a lookalike AMI name
-# published by anyone else from matching.
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"]
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd*/ubuntu-noble-24.04-amd64-server-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
-
-
-resource "aws_eip" "eip" {
-  # Comment out this reference as it caused a circular dependency
-  #instance = aws_instance.web_server.id
-  tags = {
-    Name = "${local.instance_name}_elastic-ip"
-  }
-}
-
-resource "aws_eip_association" "elastic_ip_association" {
-  instance_id   = aws_instance.web_server.id
-  allocation_id = aws_eip.eip.id
-}
-
-resource "aws_instance" "web_server" {
-  ami                    = var.ami_id != null ? var.ami_id : data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  vpc_security_group_ids = [aws_security_group.ghost_security_group.id]
-  user_data              = local.cloud_config
-
-  tags = {
-    Name = local.instance_name
-  }
-
-  connection {
-    type        = "ssh"
-    user        = var.ghost_admin
-    private_key = data.local_sensitive_file.ghost_admin_ssh_private_key.content
-    host        = aws_eip.eip.public_ip
-  }
-
-  provisioner "local-exec" {
-    command    = "echo The server IP address is ${self.public_ip}."
-    on_failure = continue
-  }
-
-  provisioner "local-exec" {
-    command    = "echo The server [Elastic] IP address is ${aws_eip.eip.public_ip} but is not yet associated."
-    on_failure = continue
-  }
-
-  provisioner "remote-exec" {
-    connection {
-      # /Elastic IP/ association happens after instance creation but instance provisioning after instance creation takes about 6m50s.
-      # Because of this order, this remote-exec SSH connection eventually times out then fails (because the default timeout is 5m30s < 6m50s).
-      # Rather than wait ~7mins for the /Elastic IP/ to be associated, this workaround uses the instance's /public IP/ (while it is still available)
-      # to connect immediately for SSH access.
-
-      # host        = aws_eip.eip.public_ip
-      host = self.public_ip
-    }
-    inline = [
-      "cloud-init status --wait",
-      "cat /etc/ghost.sh/install.env",
-      "cat /etc/ghost.sh/versions.json",
-      "ghost ls"
-    ]
-    on_failure = continue
-  }
+  # Both servers run the same checks once cloud-init reports done.
+  provisioning_checks = [
+    "cloud-init status --wait",
+    "cat /etc/ghost.sh/install.env",
+    "cat /etc/ghost.sh/versions.json",
+    "ghost ls",
+  ]
 }
 
 resource "random_id" "ghost_mysql_password" {
