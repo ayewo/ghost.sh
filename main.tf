@@ -2,11 +2,19 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 4.40"
+      version = "~> 6.0"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
     }
   }
 
-  required_version = ">= 1.2.0"
+  required_version = ">= 1.5.0"
 }
 
 provider "aws" {
@@ -29,29 +37,36 @@ data "local_sensitive_file" "ghost_admin_ssh_private_key" {
 }
 
 
-data "template_file" "cloud-config" {
-  template = file(local.path_cloud_config)
-
-  vars = {
-    ghost_admin_email          = "${var.ghost_admin_email}"
-    ghost_admin_ssh_public_key = "${data.local_file.ghost_admin_ssh_public_key.content}"
-    ghost_blog_domain          = "${var.ghost_blog_domain}"
-    ghost_blog_name            = "${var.ghost_blog_name}"
+locals {
+  cloud_config = templatefile(local.path_cloud_config, {
+    ghost_admin_email          = var.ghost_admin_email
+    ghost_admin_ssh_public_key = data.local_file.ghost_admin_ssh_public_key.content
+    ghost_blog_domain          = var.ghost_blog_domain
+    ghost_blog_name            = var.ghost_blog_name
     ghost_elastic_ip           = aws_eip.eip.public_ip
-    ghost_mysql_password       = "${random_id.ghost_mysql_password.id}"
-    ghost_admin_password       = "${random_id.ghost_admin_password.id}"
+    ghost_mysql_password       = random_id.ghost_mysql_password.id
+    ghost_admin_password       = random_id.ghost_admin_password.id
     ghost_ssl_staging          = tostring(var.ghost_ssl_staging)
     ghost_ssl_force            = tostring(var.ghost_ssl_force)
-  }
+    ghost_version              = var.ghost_version
+    ghost_cli_version          = var.ghost_cli_version
+  })
 }
 
-data "template_cloudinit_config" "config" {
-  gzip          = false
-  base64_encode = false
+# Canonical's own account. Pinning the owner is what stops a lookalike AMI name
+# published by anyone else from matching.
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]
 
-  part {
-    content_type = "text/cloud-config"
-    content      = data.template_file.cloud-config.rendered
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd*/ubuntu-noble-24.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
   }
 }
 
@@ -71,10 +86,10 @@ resource "aws_eip_association" "elastic_ip_association" {
 }
 
 resource "aws_instance" "web_server" {
-  ami                    = var.ami_id
-  instance_type          = "t2.small"
+  ami                    = var.ami_id != null ? var.ami_id : data.aws_ami.ubuntu.id
+  instance_type          = var.instance_type
   vpc_security_group_ids = [aws_security_group.ghost_security_group.id]
-  user_data              = data.template_cloudinit_config.config.rendered
+  user_data              = local.cloud_config
 
   tags = {
     Name = local.instance_name

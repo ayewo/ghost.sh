@@ -92,6 +92,21 @@ Install [Terraform](https://www.terraform.io) on your machine.
 
 
 
+## What you get
+| Component | Version | Notes |
+|---|---|---|
+| Ubuntu | 24.04 LTS (Noble) | Looked up from Canonical's AMI catalogue at plan time, so you always get the newest patched image. Override with `ami_id`. |
+| Ghost | `6.63.0` | Pinned via `ghost_version`. |
+| Ghost-CLI | `1.32.4` | Pinned via `ghost_cli_version`. Ghost 6.63.0 requires `^1.29.1`. |
+| Node.js | 22.x | Ghost 6 declares `^22.23.1 \|\| ^24.20.0`; 22 is what Ghost's own install guide uses. |
+| MySQL | 8.0 | The only database Ghost supports in production. |
+| NGINX + acme.sh | distro / latest | See [SSL certificates](#ssl-certificates). |
+
+Both versions are pinned on purpose: rebuilding the stack six months from now gives you the blog you tested, not whatever is newest that day. Bump them deliberately.
+
+A 2 GB swapfile is provisioned before Ghost installs, because the `npm install` is the memory peak and Ghost's upgrade guide asks for the headroom.
+
+
 ## SSL certificates
 Ghost-CLI provisions certificates from Let's Encrypt using [acme.sh](https://github.com/acmesh-official/acme.sh). `ghost.sh` requests one automatically when **both** are true:
 
@@ -123,11 +138,25 @@ Provisioning writes a manifest of every version it installed to `/etc/ghost.sh/v
 ```bash
 $ cat /etc/ghost.sh/versions.json
 {
-  "generated_at": "<UTC timestamp of the run>",
-  "blog":     { "url": ..., "ssl": "letsencrypt | letsencrypt-staging | none" },
-  "os":       { "name": ..., "version": ..., "kernel": ... },
-  "versions": { "nginx": ..., "mysql": ..., "node": ..., "npm": ...,
-                "ghost-cli": ..., "ghost": ..., "acme.sh": ... }
+  "generated_at": "2026-09-09T14:31:07Z",
+  "blog": {
+    "url": "https://your-domain.com",
+    "ssl": "letsencrypt"
+  },
+  "os": {
+    "name": "Ubuntu",
+    "version": "24.04.3 LTS (Noble Numbat)",
+    "kernel": "6.8.0-79-generic"
+  },
+  "versions": {
+    "nginx": "1.24.0",
+    "mysql": "8.0.43",
+    "node": "22.23.2",
+    "npm": "10.9.4",
+    "ghost-cli": "1.32.4",
+    "ghost": "6.63.0",
+    "acme.sh": "3.1.1"
+  }
 }
 ```
 

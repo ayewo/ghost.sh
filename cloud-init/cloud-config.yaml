@@ -22,6 +22,13 @@ package_update: true
 # Update installed packages
 package_upgrade: true
 
+# Ghost's upgrade guide asks for RAM or swap headroom before installing, and the
+# npm install is where the peak sits. Required on a 1 GB host; harmless above it.
+swap:
+  filename: /swapfile
+  size: 2G
+  maxsize: 2G
+
 # Ghost-CLI provisions TLS certificates with acme.sh, which it downloads itself
 # into /etc/letsencrypt -- so there is no certbot in this list.
 packages:
@@ -295,10 +302,12 @@ write_files:
 
 # Check that all dependencies are present
 runcmd:
-  # Add the NodeSource APT repository for Node 16
-  - curl -sL https://deb.nodesource.com/setup_16.x | sudo -E bash
-  - apt install nodejs -y 
-  - npm install ghost-cli@latest -g
+  # Add the NodeSource APT repository for Node 22. Ghost ${ghost_version}
+  # declares node ^22.23.1 || ^24.20.0, and 22 is the version Ghost's own
+  # install guide uses. runcmd is already root, so this needs no sudo.
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+  - npm install -g ghost-cli@${ghost_cli_version}
   - mkdir -p /var/www/ghost
   - chown ghost-mgr:ghost-mgr /var/www/ghost
   - chmod 775 /var/www/ghost
@@ -306,7 +315,7 @@ runcmd:
   - mkdir -p /home/ghost-mgr/tmp
   - cp /run/0[1-4]_ghost*.* /home/ghost-mgr/tmp
   - chown -R ghost-mgr:ghost-mgr /home/ghost-mgr/tmp/
-  - [su, ghost-mgr, -c, "cd /var/www/ghost && ghost install --no-setup"]
+  - [su, ghost-mgr, -c, "cd /var/www/ghost && ghost install ${ghost_version} --no-setup"]
   
   # mysql config
   - mysql < /home/ghost-mgr/tmp/01_ghost-mysql-dba.sql > /home/ghost-mgr/tmp/01_ghost-mysql-dba.out
