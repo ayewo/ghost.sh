@@ -29,6 +29,19 @@ die() {
     exit 1
 }
 
+# Sizes come out of du and df in KB. Round MB upwards and keep a decimal on GB,
+# so a small archive reports "1 MB" rather than a useless "0 MB".
+human_kb() {
+    local kb=$1
+    if (( kb < 1024 )); then
+        printf '%d KB' "$kb"
+    elif (( kb < 1048576 )); then
+        printf '%d MB' $(( (kb + 1023) / 1024 ))
+    else
+        printf '%d.%d GB' $(( kb / 1048576 )) $(( (kb % 1048576) * 10 / 1048576 ))
+    fi
+}
+
 [[ -n "$archive" ]] || die "usage: $0 <backup-archive.zip> [ghost-dir]"
 [[ -f "$archive" ]] || die "no such archive: $archive"
 [[ -d "$ghost_dir" ]] || die "no Ghost install at $ghost_dir"
@@ -69,8 +82,25 @@ if [[ -n "${GHOST_CLI_STAFF_AUTH_TOKEN:-}" && ! "$GHOST_CLI_STAFF_AUTH_TOKEN" =~
     die "GHOST_CLI_STAFF_AUTH_TOKEN is malformed; it must be 24 hex characters, a colon, then 64 hex characters"
 fi
 
-workdir=$(mktemp -d)
+# The archive is briefly on disk three times over: the .zip, the unpacked copy,
+# and the copy landing in content/. Images barely compress, so the unpacked size
+# is close to the archive size -- check before starting rather than running the
+# disk dry halfway through a restore.
+archive_kb=$(du -k "$archive" | cut -f1)
+avail_kb=$(df -Pk "$ghost_dir" | awk 'NR==2 {print $4}')
+needed_kb=$(( archive_kb * 5 / 2 ))
+if (( avail_kb < needed_kb )); then
+    die "not enough free space in $ghost_dir: a $(human_kb "$archive_kb") archive needs about $(human_kb "$needed_kb"), but only $(human_kb "$avail_kb") is available"
+fi
+
+# Unpack beside the Ghost install rather than under /tmp. Two reasons, both of
+# which bite on a 1 GB server: systemd mounts /tmp as a tmpfs unless the distro
+# masks it, so a large archive would be unpacked into RAM; and staying on one
+# filesystem makes the copy into content/ a rename-speed operation rather than a
+# second full read and write.
+workdir=$(mktemp -d -p "$ghost_dir" .ghost.sh-restore.XXXXXX) || die "cannot create a working directory in $ghost_dir"
 trap 'rm -rf "$workdir"' EXIT
+
 unzip -q "$archive" -d "$workdir"
 
 # -print -quit rather than a pipe to head: under pipefail a missing data/

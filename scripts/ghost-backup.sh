@@ -52,9 +52,15 @@ ghost backup
 archive=$(ls -1t "$ghost_dir"/backup-from-v*.zip 2>/dev/null | head -1) || true
 [[ -n "$archive" ]] || die "ghost backup reported success but left no archive in $ghost_dir"
 
+archive_kb=$(du -k "$archive" | cut -f1)
+
 echo
 echo "Archive: $archive"
 echo "Size:    $(du -h "$archive" | cut -f1)"
+# ghost-restore.sh refuses to start without this much room, because the archive
+# is briefly on disk three times: the .zip, the unpacked copy, and the copy
+# landing in content/. Worth knowing before you migrate onto a smaller server.
+echo "Restore needs about $(( (archive_kb * 5 / 2 + 1023) / 1024 )) MB free on the target."
 echo
 echo "Contents:"
 unzip -Z1 "$archive" | awk -F/ '{print $1}' | sort | uniq -c | sort -rn | sed 's/^/  /' || true

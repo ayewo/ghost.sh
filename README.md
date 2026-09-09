@@ -129,7 +129,9 @@ Install [Terraform](https://www.terraform.io) on your machine.
 | Firewall | `aws_security_group` | `digitalocean_firewall` |
 | Credentials | `~/.aws/credentials` or `AWS_*` | `DIGITALOCEAN_TOKEN` or `do_token` |
 
-`s-1vcpu-1gb` is Ghost's stated 1 GB minimum rather than a comfortable amount. Two things make it work: the 2 GB swapfile, and a MySQL drop-in at `/etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf` that turns `performance_schema` off and caps the buffer pool and connection count. Step up to `s-1vcpu-2gb` if you plan to run much beyond a blog.
+`s-1vcpu-1gb` is Ghost's stated 1 GB minimum rather than a comfortable amount. Two things make it work: the 2 GB swapfile, and a MySQL drop-in at `/etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf` that turns `performance_schema` off and caps the buffer pool and connection count. `performance_schema` alone accounts for a few hundred MB of MySQL 8's default allocation, and nothing a blog ever reads. Step up to `s-1vcpu-2gb` if you plan to run much beyond a blog.
+
+The rough memory budget at rest on 1 GB — Ubuntu ~200 MB, MySQL ~300 MB, Ghost under Node ~250 MB, NGINX ~20 MB — leaves little spare, which is what the swapfile is for. Of the 25 GB disk, the swapfile takes 2 GB, so plan on ~23 GB for the system, Ghost and your content.
 
 Outputs are named for the cloud that produced them — `instance_*` on AWS, `droplet_*` on DigitalOcean — and the ones belonging to the cloud you did not pick read `null`. The provider-neutral values are `server_public_ip`, `server_ssh_command` and `server_blog_url`.
 
@@ -245,6 +247,16 @@ Two scripts in `scripts/` move a self-hosted Ghost blog onto a `ghost.sh` server
     ```
 
 5. **Import the members CSV** in Ghost Admin, using the path the script printed.
+
+### Before migrating onto a smaller server
+`ghost-backup.sh` prints how much free space the restore will need, and `ghost-restore.sh` refuses to start without it — the archive is briefly on disk three times over, as the `.zip`, the unpacked copy, and the copy landing in `content/`. To check ahead of time, on the old server:
+
+```bash
+du -sh /var/www/ghost/content        # what has to move
+df -h /var/www/ghost                 # what you have now
+```
+
+The restore unpacks alongside the Ghost install rather than under `/tmp`, which keeps a large archive off a possibly RAM-backed `/tmp` and makes the copy into `content/` stay on one filesystem.
 
 ### Version ladder
 Restoring across major versions has a constraint worth knowing before you start. Ghost requires you to be on the latest minor of your current major, and no more than two majors behind, so an archive from a distant version will be rejected. `ghost-restore.sh` notices when an archive crosses a major and tells you what to do: restore it onto a server running its own major, step that up with `ghost update v<major>` then `ghost update`, and take a fresh backup from there.
