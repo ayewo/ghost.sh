@@ -81,6 +81,7 @@ write_files:
     ghost_blog_domain=${ghost_blog_domain}
     ghost_ssl_staging=${ghost_ssl_staging}
     ghost_ssl_force=${ghost_ssl_force}
+    ghost_ssl_ip_wait=${ghost_ssl_ip_wait}
     out_dir=/etc/ghost.sh
 
     convertIP2domain() {
@@ -98,6 +99,35 @@ write_files:
     # A records, only one of them us) resolve correctly.
     domain_points_here() {
         getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | grep -qxF "$2"
+    }
+
+    # The address the internet sees us as. A floating address is delivered by
+    # NAT on both clouds, so it never shows up on a local interface and has to
+    # be asked for from outside. Several services, because one of them being
+    # down should not cost us a certificate.
+    current_public_ip() {
+        local url reply
+        for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me/ip; do
+            reply=$(curl -fsS --max-time 10 "$url" 2>/dev/null) || continue
+            reply=$(printf '%s' "$reply" | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -1)
+            if [[ -n "$reply" ]]; then
+                printf '%s' "$reply"
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    # Block until the floating address actually reaches this server.
+    wait_for_public_ip() {
+        local want=$1 limit=$2 got
+        local deadline=$((SECONDS + limit))
+        while (( SECONDS < deadline )); do
+            got=$(current_public_ip) || got=""
+            [[ "$got" == "$want" ]] && return 0
+            sleep 10
+        done
+        return 1
     }
 
     using_fallback_domain=0
@@ -133,6 +163,24 @@ write_files:
         ghost_ssl_mode=letsencrypt
     else
         echo "Skipping SSL: $ghost_blog_domain is a nip.io fallback domain. Set ghost_ssl_force to request one anyway."
+    fi
+
+    # Let's Encrypt validates a certificate against whatever answers on the
+    # address the blog's DNS points at, and that is the floating address --
+    # which Terraform can only attach once this server exists. Asking for a
+    # certificate before it arrives gets us a failed challenge, so wait for it.
+    # Bounded, and serving over HTTP is a far better outcome than either hanging
+    # here forever or failing the build.
+    if [[ "$ghost_ssl_mode" != "none" ]]; then
+        echo "Waiting up to $ghost_ssl_ip_wait s for $instance_public_ip to reach this server..."
+        if wait_for_public_ip "$instance_public_ip" "$ghost_ssl_ip_wait"; then
+            echo "This server now answers on $instance_public_ip."
+        else
+            echo "Gave up waiting: this server does not answer on $instance_public_ip yet."
+            echo "Serving over HTTP. Once the address is attached, request a certificate with:"
+            echo "  cd /var/www/ghost && ghost setup ssl --sslemail ${ghost_admin_email}"
+            ghost_ssl_mode=none
+        fi
     fi
 
     if [[ "$ghost_ssl_mode" == "letsencrypt" && "$ghost_ssl_staging" == "true" ]]; then

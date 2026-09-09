@@ -50,34 +50,15 @@ resource "aws_instance" "web_server" {
     Name = local.instance_name
   }
 
-  connection {
-    type        = "ssh"
-    user        = var.ghost_admin
-    private_key = data.local_sensitive_file.ghost_admin_ssh_private_key.content
-    host        = aws_eip.eip[0].public_ip
-  }
-
+  # The provisioning checks run from terraform_data.provisioning_checks in
+  # main.tf, so that the elastic IP is associated before cloud-init needs it.
   provisioner "local-exec" {
     command    = "echo The server IP address is ${self.public_ip}."
     on_failure = continue
   }
 
   provisioner "local-exec" {
-    command    = "echo The server [Elastic] IP address is ${aws_eip.eip[0].public_ip} but is not yet associated."
-    on_failure = continue
-  }
-
-  provisioner "remote-exec" {
-    connection {
-      # /Elastic IP/ association happens after instance creation but instance provisioning after instance creation takes about 6m50s.
-      # Because of this order, this remote-exec SSH connection eventually times out then fails (because the default timeout is 5m30s < 6m50s).
-      # Rather than wait ~7mins for the /Elastic IP/ to be associated, this workaround uses the instance's /public IP/ (while it is still available)
-      # to connect immediately for SSH access.
-
-      # host        = aws_eip.eip[0].public_ip
-      host = self.public_ip
-    }
-    inline     = local.provisioning_checks
+    command    = "echo The server [Elastic] IP address is ${aws_eip.eip[0].public_ip} and is about to be associated."
     on_failure = continue
   }
 }

@@ -74,6 +74,12 @@ variable "ghost_ssl_force" {
   default     = false
 }
 
+variable "ghost_ssl_ip_wait" {
+  description = "Seconds cloud-init will wait for the reserved public address to reach the server before requesting a certificate. On timeout the blog is served over HTTP instead, and the certificate can be requested later with `ghost setup ssl`."
+  type        = number
+  default     = 300
+}
+
 variable "ghost_blog_name" {
   description = "This is the title (aka name) of your Ghost blog. E.g. John Gruber's blog is named 'Daring Fireball'."
   type        = string

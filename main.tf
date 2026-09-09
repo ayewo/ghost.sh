@@ -56,6 +56,7 @@ locals {
   # server exists. That ordering is what lets the address be baked into the
   # cloud-config, which needs it to derive the nip.io fallback domain.
   public_ip = local.on_aws ? one(aws_eip.eip[*].public_ip) : one(digitalocean_reserved_ip.eip[*].ip_address)
+  server_id = local.on_aws ? one(aws_instance.web_server[*].id) : one(digitalocean_droplet.web_server[*].id)
 
   cloud_config = templatefile(local.path_cloud_config, {
     ghost_admin_email          = var.ghost_admin_email
@@ -67,6 +68,7 @@ locals {
     ghost_admin_password       = random_id.ghost_admin_password.id
     ghost_ssl_staging          = tostring(var.ghost_ssl_staging)
     ghost_ssl_force            = tostring(var.ghost_ssl_force)
+    ghost_ssl_ip_wait          = tostring(var.ghost_ssl_ip_wait)
     ghost_version              = var.ghost_version
     ghost_cli_version          = var.ghost_cli_version
   })
@@ -86,4 +88,36 @@ resource "random_id" "ghost_mysql_password" {
 
 resource "random_id" "ghost_admin_password" {
   byte_length = 16
+}
+
+
+# These checks deliberately do not live on the server resource. A provisioner
+# there would hold the resource open until cloud-init had finished, and the
+# address association depends on that same resource -- so the floating address
+# would only ever be attached after cloud-init was already done. Cloud-init
+# needs it attached sooner than that: a certificate is issued against whatever
+# answers on the address the blog's DNS points at, which is the floating one.
+#
+# Hanging the checks off the association instead lets the address attach within
+# seconds of the server booting, long before Ghost is installed, and means this
+# can connect on the floating address rather than the temporary one.
+resource "terraform_data" "provisioning_checks" {
+  triggers_replace = [local.server_id]
+
+  connection {
+    type        = "ssh"
+    user        = var.ghost_admin
+    private_key = data.local_sensitive_file.ghost_admin_ssh_private_key.content
+    host        = local.public_ip
+  }
+
+  provisioner "remote-exec" {
+    inline     = local.provisioning_checks
+    on_failure = continue
+  }
+
+  depends_on = [
+    aws_eip_association.elastic_ip_association,
+    digitalocean_reserved_ip_assignment.reserved_ip_assignment,
+  ]
 }

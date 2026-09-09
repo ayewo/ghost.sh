@@ -163,6 +163,9 @@ Two variables adjust this:
 |---|---|---|
 | `ghost_ssl_staging` | `false` | Issue from Let's Encrypt's staging CA. The certificate is untrusted by browsers, but rehearsing a deploy this way does not spend the production rate limit. |
 | `ghost_ssl_force` | `false` | Request a certificate even on the `nip.io` fallback domain. |
+| `ghost_ssl_ip_wait` | `300` | Seconds to wait for the reserved address to reach the server before asking for a certificate. |
+
+That last one exists because of an ordering problem worth knowing about. Let's Encrypt validates a certificate against whatever answers on the address your DNS points at, and that is the reserved address — which the cloud can only attach once the server exists. So cloud-init waits for the address to arrive before requesting anything. If it never does, the blog is served over HTTP rather than the build hanging or failing, and the log tells you the one command needed to finish the job later.
 
 To add a certificate later, point your DNS at the server and then run:
 

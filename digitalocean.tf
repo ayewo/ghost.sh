@@ -44,27 +44,15 @@ resource "digitalocean_droplet" "web_server" {
 
   tags = [replace("${var.prefix}_${var.instance_name}", ".", "-")]
 
-  connection {
-    type        = "ssh"
-    user        = var.ghost_admin
-    private_key = data.local_sensitive_file.ghost_admin_ssh_private_key.content
-    host        = self.ipv4_address
-  }
-
+  # The provisioning checks run from terraform_data.provisioning_checks in
+  # main.tf, so that the reserved IP is assigned before cloud-init needs it.
   provisioner "local-exec" {
     command    = "echo The droplet IP address is ${self.ipv4_address}."
     on_failure = continue
   }
 
   provisioner "local-exec" {
-    command    = "echo The droplet [Reserved] IP address is ${digitalocean_reserved_ip.eip[0].ip_address} but is not yet assigned."
-    on_failure = continue
-  }
-
-  provisioner "remote-exec" {
-    # Same reasoning as the EC2 instance: the reserved IP is only assigned once
-    # the droplet exists, so connect on the address it already has.
-    inline     = local.provisioning_checks
+    command    = "echo The droplet [Reserved] IP address is ${digitalocean_reserved_ip.eip[0].ip_address} and is about to be assigned."
     on_failure = continue
   }
 }
