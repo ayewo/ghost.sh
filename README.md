@@ -106,7 +106,7 @@ Install [Terraform](https://www.terraform.io) on your machine.
     ```
     </details>
 
-    You only need credentials for the cloud you picked. Every resource for the other one is `count = 0`, and Terraform does not ask a provider for credentials it has no resources to manage.
+    You only need credentials for the cloud you picked. Every resource for the other one is `count = 0`; the DigitalOcean provider then never asks for a token, and the AWS provider — which otherwise validates credentials the moment it is configured, whether or not it has anything to manage — is explicitly stood down.
 
 5. **Run the code**:
     ```bash
@@ -124,7 +124,7 @@ Install [Terraform](https://www.terraform.io) on your machine.
 | Server | `aws_instance`, `t3.small` | `digitalocean_droplet`, `s-1vcpu-1gb` |
 | Size variable | `instance_type` | `do_droplet_size` |
 | Region | `region`, default `eu-west-2` | `do_region`, default `lon1` |
-| Image | newest Ubuntu 24.04 LTS AMI, or `ami_id` | `do_image`, default `ubuntu-24-04-x64` |
+| Image | newest Ubuntu 24.04 LTS AMI, or pin `ami_id` | `do_image`, default `ubuntu-24-04-x64` |
 | Static address | `aws_eip` | `digitalocean_reserved_ip` |
 | Firewall | `aws_security_group` | `digitalocean_firewall` |
 | Credentials | `~/.aws/credentials` or `AWS_*` | `DIGITALOCEAN_TOKEN` or `do_token` |

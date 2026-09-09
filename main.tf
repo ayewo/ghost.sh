@@ -23,6 +23,19 @@ terraform {
 
 provider "aws" {
   region = var.region
+
+  # The AWS provider resolves and validates credentials the moment it is
+  # configured, whether or not it has any resources to manage -- so without
+  # this, a DigitalOcean run would still demand AWS keys, after waiting on the
+  # EC2 metadata endpoint to time out. Stand the provider down when AWS is not
+  # the chosen cloud. The placeholder keys are never used for anything: every
+  # aws_* resource is count = 0 in that case.
+  access_key                  = var.cloud_provider == "aws" ? null : "unused"
+  secret_key                  = var.cloud_provider == "aws" ? null : "unused"
+  skip_credentials_validation = var.cloud_provider != "aws"
+  skip_requesting_account_id  = var.cloud_provider != "aws"
+  skip_region_validation      = var.cloud_provider != "aws"
+  skip_metadata_api_check     = var.cloud_provider == "aws" ? null : "true"
 }
 
 # Left null, the provider reads DIGITALOCEAN_TOKEN from the environment. An

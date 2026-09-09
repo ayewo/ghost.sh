@@ -2,13 +2,16 @@
 # AWS: created when cloud_provider = "aws"
 # ----------------------------------------------------------------------------
 
-# Canonical's own account. Pinning the owner is what stops a lookalike AMI name
-# published by anyone else from matching.
+# Skipped entirely when ami_id pins an image, so a pinned deployment needs no
+# ec2:DescribeImages permission and makes no call it will not use.
 data "aws_ami" "ubuntu" {
-  count = local.on_aws ? 1 : 0
+  count = local.on_aws && var.ami_id == null ? 1 : 0
 
   most_recent = true
-  owners      = ["099720109477"]
+
+  # Canonical's own account. Pinning the owner is what stops a lookalike AMI
+  # name published by anyone else from matching.
+  owners = ["099720109477"]
 
   filter {
     name   = "name"
@@ -41,7 +44,7 @@ resource "aws_eip_association" "elastic_ip_association" {
 resource "aws_instance" "web_server" {
   count = local.on_aws ? 1 : 0
 
-  ami                    = var.ami_id != null ? var.ami_id : data.aws_ami.ubuntu[0].id
+  ami                    = coalesce(var.ami_id, one(data.aws_ami.ubuntu[*].id))
   instance_type          = var.instance_type
   vpc_security_group_ids = [aws_security_group.ghost_security_group[0].id]
   user_data              = local.cloud_config
