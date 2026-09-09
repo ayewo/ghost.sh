@@ -6,11 +6,11 @@
 
 ## Still a WIP!
 > [!IMPORTANT]
-> **Targeting a v1.0 release but not there yet because I've not had time to finish up the TODOs I left in the code.**
+> **The TODOs are finished — SSL certificates are provisioned, and every installed version is recorded on the server. Targeting a v1.0 release once this has been through a real deploy on both clouds.**
 
 
 ## Why?
-Ghost offers an easy-to-use [1-Click App](https://marketplace.digitalocean.com/apps/ghost) on the DigitalOcean Marketplace but the 1-Click App is not available on other cloud providers. `ghost.sh` plans to fix that by being a 1-Click solution for installing Ghost on any cloud provider, starting with AWS. 
+Ghost offers an easy-to-use [1-Click App](https://marketplace.digitalocean.com/apps/ghost) on the DigitalOcean Marketplace but the 1-Click App is not available on other cloud providers. `ghost.sh` plans to fix that by being a 1-Click solution for installing Ghost on any cloud provider. **AWS** and **DigitalOcean** are supported today; pick one with `cloud_provider`.
 
 You can read more about what motivated me to start this project on my blog: [ghost.sh](https://ayewo.com/ghost-sh/).
 
@@ -67,7 +67,28 @@ Install [Terraform](https://www.terraform.io) on your machine.
     EOF
     ```
 
-3. **Specify your AWS `credentials`**[^iam-note] inside `~/.aws/credentials`: 
+3. **Choose a cloud** in `terraform.tfvars`. `aws` is the default, so this step is only needed for DigitalOcean:
+
+    ```bash
+    echo 'cloud_provider = "digitalocean"' >> terraform.tfvars
+    ```
+
+4. **Specify your cloud credentials.**
+
+    <details open>
+    <summary><strong>DigitalOcean</strong></summary>
+
+    A [personal access token](https://cloud.digitalocean.com/account/api/tokens) with write scope, kept in the environment rather than in `terraform.tfvars`:
+
+    ```bash
+    export DIGITALOCEAN_TOKEN=dop_v1_<64 hex>
+    ```
+    </details>
+
+    <details>
+    <summary><strong>AWS</strong></summary>
+
+    Your `credentials`[^iam-note] inside `~/.aws/credentials`: 
 
     ```bash
     mkdir -p ~/.aws && cat << EOF > ~/.aws/credentials
@@ -83,13 +104,164 @@ Install [Terraform](https://www.terraform.io) on your machine.
     export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
     export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
     ```
+    </details>
 
-4. **Run the code**:
+    You only need credentials for the cloud you picked. Every resource for the other one is `count = 0`; the DigitalOcean provider then never asks for a token, and the AWS provider — which otherwise validates credentials the moment it is configured, whether or not it has anything to manage — is explicitly stood down.
+
+5. **Run the code**:
     ```bash
     terraform init
     terraform apply -auto-approve
     ```
 
+
+
+## Choosing a cloud
+`cloud_provider` selects the target; everything else about the blog is identical either way.
+
+| | `aws` (default) | `digitalocean` |
+|---|---|---|
+| Server | `aws_instance`, `t3.small` | `digitalocean_droplet`, `s-1vcpu-1gb` |
+| Size variable | `instance_type` | `do_droplet_size` |
+| Region | `region`, default `eu-west-2` | `do_region`, default `lon1` |
+| Image | newest Ubuntu 24.04 LTS AMI, or pin `ami_id` | `do_image`, default `ubuntu-24-04-x64` |
+| Static address | `aws_eip` | `digitalocean_reserved_ip` |
+| Firewall | `aws_security_group` | `digitalocean_firewall` |
+| Credentials | `~/.aws/credentials` or `AWS_*` | `DIGITALOCEAN_TOKEN` or `do_token` |
+
+`s-1vcpu-1gb` is Ghost's stated 1 GB minimum rather than a comfortable amount. Two things make it work: the 2 GB swapfile, and a MySQL drop-in at `/etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf` that turns `performance_schema` off and caps the buffer pool and connection count. `performance_schema` alone accounts for a few hundred MB of MySQL 8's default allocation, and nothing a blog ever reads. Step up to `s-1vcpu-2gb` if you plan to run much beyond a blog.
+
+The rough memory budget at rest on 1 GB — Ubuntu ~200 MB, MySQL ~300 MB, Ghost under Node ~250 MB, NGINX ~20 MB — leaves little spare, which is what the swapfile is for. Of the 25 GB disk, the swapfile takes 2 GB, so plan on ~23 GB for the system, Ghost and your content.
+
+Outputs are named for the cloud that produced them — `instance_*` on AWS, `droplet_*` on DigitalOcean — and the ones belonging to the cloud you did not pick read `null`. The provider-neutral values are `server_public_ip`, `server_ssh_command` and `server_blog_url`.
+
+
+## What you get
+| Component | Version | Notes |
+|---|---|---|
+| Ubuntu | 24.04 LTS (Noble) | Looked up from Canonical's AMI catalogue at plan time, so you always get the newest patched image. Override with `ami_id`. |
+| Ghost | `6.63.0` | Pinned via `ghost_version`. |
+| Ghost-CLI | `1.32.4` | Pinned via `ghost_cli_version`. Ghost 6.63.0 requires `^1.29.1`. |
+| Node.js | 22.x | Ghost 6 declares `^22.23.1 \|\| ^24.20.0`; 22 is what Ghost's own install guide uses. |
+| MySQL | 8.0 | The only database Ghost supports in production. |
+| NGINX + acme.sh | distro / latest | See [SSL certificates](#ssl-certificates). |
+
+Both versions are pinned on purpose: rebuilding the stack six months from now gives you the blog you tested, not whatever is newest that day. Bump them deliberately.
+
+A 2 GB swapfile is provisioned before Ghost installs, because the `npm install` is the memory peak and Ghost's upgrade guide asks for the headroom.
+
+
+## SSL certificates
+Ghost-CLI provisions certificates from Let's Encrypt using [acme.sh](https://github.com/acmesh-official/acme.sh). `ghost.sh` requests one automatically when **both** are true:
+
+1. you set `ghost_blog_domain`, and
+2. one of that domain's DNS `A` records already points at the server.
+
+Otherwise the blog falls back to a [nip.io](https://nip.io) domain derived from the server's IP and is served over plain HTTP. That fallback is deliberate: Let's Encrypt applies its rate limits per registered domain, and `nip.io` is not on the [Public Suffix List](https://publicsuffix.org/), so every `nip.io` user shares a single quota. Requesting a certificate there fails often, and the failure would take the rest of `ghost setup` down with it.
+
+Two variables adjust this:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ghost_ssl_staging` | `false` | Issue from Let's Encrypt's staging CA. The certificate is untrusted by browsers, but rehearsing a deploy this way does not spend the production rate limit. |
+| `ghost_ssl_force` | `false` | Request a certificate even on the `nip.io` fallback domain. |
+| `ghost_ssl_ip_wait` | `300` | Seconds to wait for the reserved address to reach the server before asking for a certificate. |
+
+That last one exists because of an ordering problem worth knowing about. Let's Encrypt validates a certificate against whatever answers on the address your DNS points at, and that is the reserved address — which the cloud can only attach once the server exists. So cloud-init waits for the address to arrive before requesting anything. If it never does, the blog is served over HTTP rather than the build hanging or failing, and the log tells you the one command needed to finish the job later.
+
+To add a certificate later, point your DNS at the server and then run:
+
+```bash
+ssh -i ~/ghost.sh_ssh/ghost_admin_ssh_key ghost-mgr@<server-ip>
+cd /var/www/ghost
+ghost config --url https://your-domain.com
+ghost setup ssl --sslemail you@example.com
+```
+
+
+## What got installed
+Provisioning writes a manifest of every version it installed to `/etc/ghost.sh/versions.json`, alongside `/etc/ghost.sh/install.env` recording the URL and SSL mode the blog was set up with. `terraform apply` prints both at the end of its run.
+
+```bash
+$ cat /etc/ghost.sh/versions.json
+{
+  "generated_at": "2026-09-09T14:31:07Z",
+  "blog": {
+    "url": "https://your-domain.com",
+    "ssl": "letsencrypt"
+  },
+  "os": {
+    "name": "Ubuntu",
+    "version": "24.04.3 LTS (Noble Numbat)",
+    "kernel": "6.8.0-79-generic"
+  },
+  "versions": {
+    "nginx": "1.24.0",
+    "mysql": "8.0.43",
+    "node": "22.23.2",
+    "npm": "10.9.4",
+    "ghost-cli": "1.32.4",
+    "ghost": "6.63.0",
+    "acme.sh": "3.1.1"
+  }
+}
+```
+
+A version reads as `""` when that tool is not present, so the manifest is also how you tell that a piece of the stack failed to install.
+
+Re-run `sudo ghost.sh-versions` on the server to refresh it after a `ghost update`.
+
+
+## Moving an existing blog
+Two scripts in `scripts/` move a self-hosted Ghost blog onto a `ghost.sh` server. They wrap `ghost backup` and `ghost import`, and cover the two things that pair leaves behind.
+
+**What the pair does and does not carry.** `ghost backup` writes a single `backup-from-v<version>-on-<timestamp>.zip` holding a content export as JSON, a members export as CSV, and your `images/`, `media/`, `files/`, `settings/` and `themes/` directories. `ghost import` restores *only* the content JSON: it reads its argument as JSON and posts it to the Admin API, so handing it the `.zip` fails outright. So `ghost-restore.sh` unpacks the archive, gives `ghost import` the JSON from inside it, copies the content directories into place with the right ownership, and leaves the members CSV somewhere you can find it.
+
+**Members are the one manual step.** The content importer has no idea what to do with a members CSV, and Ghost Admin is the only thing that takes one. The script prints the path when it finishes; upload it under **Members → ⋯ → Import members**.
+
+### Steps
+1. **Create a Staff access token on each blog.** Ghost 5.129.0 and later authenticate these commands with a token rather than a password, because Ghost-CLI cannot answer a two-factor prompt. In Ghost Admin: **Settings → Advanced → Integrations → Add custom integration**, then copy the Admin API key.
+
+2. **Back up the old blog**, as the user that owns the install:
+
+    ```bash
+    scp -i <key> scripts/ghost-backup.sh ghost-mgr@<old-server>:~/
+    ssh -i <key> ghost-mgr@<old-server>
+    export GHOST_CLI_STAFF_AUTH_TOKEN='<24 hex>:<64 hex>'   # the OLD blog's token
+    ./ghost-backup.sh
+    ```
+
+3. **Copy the archive and the restore script to the new server:**
+
+    ```bash
+    scp -i <key> ghost-mgr@<old-server>:/var/www/ghost/backup-from-v*.zip .
+    scp -i <key> backup-from-v*.zip scripts/ghost-restore.sh ghost-mgr@<new-server>:~/
+    ```
+
+4. **Restore:**
+
+    ```bash
+    ssh -i <key> ghost-mgr@<new-server>
+    export GHOST_CLI_STAFF_AUTH_TOKEN='<24 hex>:<64 hex>'   # the NEW blog's token
+    ./ghost-restore.sh backup-from-v6.26.0-on-2026-09-09-12-00-00.zip
+    ```
+
+5. **Import the members CSV** in Ghost Admin, using the path the script printed.
+
+### Before migrating onto a smaller server
+`ghost-backup.sh` prints how much free space the restore will need, and `ghost-restore.sh` refuses to start without it — the archive is briefly on disk three times over, as the `.zip`, the unpacked copy, and the copy landing in `content/`. To check ahead of time, on the old server:
+
+```bash
+du -sh /var/www/ghost/content        # what has to move
+df -h /var/www/ghost                 # what you have now
+```
+
+The restore unpacks alongside the Ghost install rather than under `/tmp`, which keeps a large archive off a possibly RAM-backed `/tmp` and makes the copy into `content/` stay on one filesystem.
+
+### Version ladder
+Restoring across major versions has a constraint worth knowing before you start. Ghost requires you to be on the latest minor of your current major, and no more than two majors behind, so an archive from a distant version will be rejected. `ghost-restore.sh` notices when an archive crosses a major and tells you what to do: restore it onto a server running its own major, step that up with `ghost update v<major>` then `ghost update`, and take a fresh backup from there.
+
+Within a major there is nothing to do — an archive from 6.26.0 restores onto 6.63.0 directly.
 
 
 ## Trivia
