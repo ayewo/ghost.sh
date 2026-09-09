@@ -34,6 +34,7 @@ swap:
 packages:
   - net-tools
   - zip
+  - unzip
   - tree
   - nginx
   - mysql-server

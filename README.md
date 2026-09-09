@@ -210,6 +210,48 @@ A version reads as `""` when that tool is not present, so the manifest is also h
 Re-run `sudo ghost.sh-versions` on the server to refresh it after a `ghost update`.
 
 
+## Moving an existing blog
+Two scripts in `scripts/` move a self-hosted Ghost blog onto a `ghost.sh` server. They wrap `ghost backup` and `ghost import`, and cover the two things that pair leaves behind.
+
+**What the pair does and does not carry.** `ghost backup` writes a single `backup-from-v<version>-on-<timestamp>.zip` holding a content export as JSON, a members export as CSV, and your `images/`, `media/`, `files/`, `settings/` and `themes/` directories. `ghost import` restores *only* the content JSON: it reads its argument as JSON and posts it to the Admin API, so handing it the `.zip` fails outright. So `ghost-restore.sh` unpacks the archive, gives `ghost import` the JSON from inside it, copies the content directories into place with the right ownership, and leaves the members CSV somewhere you can find it.
+
+**Members are the one manual step.** The content importer has no idea what to do with a members CSV, and Ghost Admin is the only thing that takes one. The script prints the path when it finishes; upload it under **Members → ⋯ → Import members**.
+
+### Steps
+1. **Create a Staff access token on each blog.** Ghost 5.129.0 and later authenticate these commands with a token rather than a password, because Ghost-CLI cannot answer a two-factor prompt. In Ghost Admin: **Settings → Advanced → Integrations → Add custom integration**, then copy the Admin API key.
+
+2. **Back up the old blog**, as the user that owns the install:
+
+    ```bash
+    scp -i <key> scripts/ghost-backup.sh ghost-mgr@<old-server>:~/
+    ssh -i <key> ghost-mgr@<old-server>
+    export GHOST_CLI_STAFF_AUTH_TOKEN='<24 hex>:<64 hex>'   # the OLD blog's token
+    ./ghost-backup.sh
+    ```
+
+3. **Copy the archive and the restore script to the new server:**
+
+    ```bash
+    scp -i <key> ghost-mgr@<old-server>:/var/www/ghost/backup-from-v*.zip .
+    scp -i <key> backup-from-v*.zip scripts/ghost-restore.sh ghost-mgr@<new-server>:~/
+    ```
+
+4. **Restore:**
+
+    ```bash
+    ssh -i <key> ghost-mgr@<new-server>
+    export GHOST_CLI_STAFF_AUTH_TOKEN='<24 hex>:<64 hex>'   # the NEW blog's token
+    ./ghost-restore.sh backup-from-v6.26.0-on-2026-09-09-12-00-00.zip
+    ```
+
+5. **Import the members CSV** in Ghost Admin, using the path the script printed.
+
+### Version ladder
+Restoring across major versions has a constraint worth knowing before you start. Ghost requires you to be on the latest minor of your current major, and no more than two majors behind, so an archive from a distant version will be rejected. `ghost-restore.sh` notices when an archive crosses a major and tells you what to do: restore it onto a server running its own major, step that up with `ghost update v<major>` then `ghost update`, and take a fresh backup from there.
+
+Within a major there is nothing to do — an archive from 6.26.0 restores onto 6.63.0 directly.
+
+
 ## Trivia
 The name `ghost.sh` can be expanded to mean "Ghost **S**elf **H**osting".
 
