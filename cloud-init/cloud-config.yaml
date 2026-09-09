@@ -73,6 +73,7 @@ write_files:
   owner: root:root
 - path: /run/02_ghost-config-setup.sh
   content: |
+    #!/usr/bin/env bash
     # ghost.sh script to settle the blog's URL and whether it can carry TLS,
     # then write the Ghost configuration file.
 
@@ -216,6 +217,7 @@ write_files:
   owner: root:root
 - path: /run/03_ghost-setup.sh
   content: |
+    #!/usr/bin/env bash
     # ghost.sh script to run `ghost setup`, with a Let's Encrypt certificate
     # whenever 02_ghost-config-setup.sh found a real domain for the blog.
 
@@ -247,6 +249,7 @@ write_files:
   owner: root:root
 - path: /run/04_ghost-admin-setup.sh
   content: |
+    #!/usr/bin/env bash
     # ghost.sh script to automate setting a secure password for the Ghost Admin user
 
     curl -s 'http://localhost:2368/ghost/api/admin/authentication/setup/' \

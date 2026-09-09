@@ -6,7 +6,7 @@
 
 ## Still a WIP!
 > [!IMPORTANT]
-> **Targeting a v1.0 release but not there yet because I've not had time to finish up the TODOs I left in the code.**
+> **The TODOs are finished — SSL certificates are provisioned, and every installed version is recorded on the server. Targeting a v1.0 release once this has been through a real deploy on both clouds.**
 
 
 ## Why?
