@@ -92,6 +92,50 @@ Install [Terraform](https://www.terraform.io) on your machine.
 
 
 
+## SSL certificates
+Ghost-CLI provisions certificates from Let's Encrypt using [acme.sh](https://github.com/acmesh-official/acme.sh). `ghost.sh` requests one automatically when **both** are true:
+
+1. you set `ghost_blog_domain`, and
+2. one of that domain's DNS `A` records already points at the server.
+
+Otherwise the blog falls back to a [nip.io](https://nip.io) domain derived from the server's IP and is served over plain HTTP. That fallback is deliberate: Let's Encrypt applies its rate limits per registered domain, and `nip.io` is not on the [Public Suffix List](https://publicsuffix.org/), so every `nip.io` user shares a single quota. Requesting a certificate there fails often, and the failure would take the rest of `ghost setup` down with it.
+
+Two variables adjust this:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ghost_ssl_staging` | `false` | Issue from Let's Encrypt's staging CA. The certificate is untrusted by browsers, but rehearsing a deploy this way does not spend the production rate limit. |
+| `ghost_ssl_force` | `false` | Request a certificate even on the `nip.io` fallback domain. |
+
+To add a certificate later, point your DNS at the server and then run:
+
+```bash
+ssh -i ~/ghost.sh_ssh/ghost_admin_ssh_key ghost-mgr@<server-ip>
+cd /var/www/ghost
+ghost config --url https://your-domain.com
+ghost setup ssl --sslemail you@example.com
+```
+
+
+## What got installed
+Provisioning writes a manifest of every version it installed to `/etc/ghost.sh/versions.json`, alongside `/etc/ghost.sh/install.env` recording the URL and SSL mode the blog was set up with. `terraform apply` prints both at the end of its run.
+
+```bash
+$ cat /etc/ghost.sh/versions.json
+{
+  "generated_at": "<UTC timestamp of the run>",
+  "blog":     { "url": ..., "ssl": "letsencrypt | letsencrypt-staging | none" },
+  "os":       { "name": ..., "version": ..., "kernel": ... },
+  "versions": { "nginx": ..., "mysql": ..., "node": ..., "npm": ...,
+                "ghost-cli": ..., "ghost": ..., "acme.sh": ... }
+}
+```
+
+A version reads as `""` when that tool is not present, so the manifest is also how you tell that a piece of the stack failed to install.
+
+Re-run `sudo ghost.sh-versions` on the server to refresh it after a `ghost update`.
+
+
 ## Trivia
 The name `ghost.sh` can be expanded to mean "Ghost **S**elf **H**osting".
 

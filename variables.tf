@@ -39,6 +39,18 @@ variable "ghost_blog_domain" {
   default     = ""
 }
 
+variable "ghost_ssl_staging" {
+  description = "Request the certificate from Let's Encrypt's staging CA instead of the real one. Useful for rehearsing a deploy: the certificate is untrusted by browsers but does not consume the production rate limit."
+  type        = bool
+  default     = false
+}
+
+variable "ghost_ssl_force" {
+  description = "Request a certificate even when ghost.sh had to fall back to a nip.io domain. Off by default: Let's Encrypt rate-limits per registered domain and nip.io is not on the Public Suffix List, so every nip.io user shares one quota."
+  type        = bool
+  default     = false
+}
+
 variable "ghost_blog_name" {
   description = "This is the title (aka name) of your Ghost blog. E.g. John Gruber's blog is named 'Daring Fireball'."
   type        = string

@@ -40,6 +40,8 @@ data "template_file" "cloud-config" {
     ghost_elastic_ip           = aws_eip.eip.public_ip
     ghost_mysql_password       = "${random_id.ghost_mysql_password.id}"
     ghost_admin_password       = "${random_id.ghost_admin_password.id}"
+    ghost_ssl_staging          = tostring(var.ghost_ssl_staging)
+    ghost_ssl_force            = tostring(var.ghost_ssl_force)
   }
 }
 
@@ -107,11 +109,8 @@ resource "aws_instance" "web_server" {
     }
     inline = [
       "cloud-init status --wait",
-      "nginx -v",
-      "certbot --version",
-      "mysql --version",
-      "node --version && npm --version",
-      "ghost --version",
+      "cat /etc/ghost.sh/install.env",
+      "cat /etc/ghost.sh/versions.json",
       "ghost ls"
     ]
     on_failure = continue
