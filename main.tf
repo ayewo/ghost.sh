@@ -30,18 +30,22 @@ provider "aws" {
   # EC2 metadata endpoint to time out. Stand the provider down when AWS is not
   # the chosen cloud. The placeholder keys are never used for anything: every
   # aws_* resource is count = 0 in that case.
-  access_key                  = var.cloud_provider == "aws" ? null : "unused"
-  secret_key                  = var.cloud_provider == "aws" ? null : "unused"
-  skip_credentials_validation = var.cloud_provider != "aws"
-  skip_requesting_account_id  = var.cloud_provider != "aws"
-  skip_region_validation      = var.cloud_provider != "aws"
-  skip_metadata_api_check     = var.cloud_provider == "aws" ? null : "true"
+  #
+  # skip_metadata_api_check is typed as a string by the provider, unlike its
+  # bool siblings -- that asymmetry is the provider's, not a mistake here.
+  access_key                  = local.on_aws ? null : "unused"
+  secret_key                  = local.on_aws ? null : "unused"
+  skip_credentials_validation = !local.on_aws
+  skip_requesting_account_id  = !local.on_aws
+  skip_region_validation      = !local.on_aws
+  skip_metadata_api_check     = local.on_aws ? null : "true"
 }
 
 # Left null, the provider reads DIGITALOCEAN_TOKEN from the environment. An
-# AWS-only run needs no token at all: every DigitalOcean resource below is
-# count = 0, and Terraform does not ask a provider for credentials it has no
-# resources to manage.
+# AWS-only run needs no token at all, and needs no stand-down of the kind above:
+# unlike the AWS provider, this one does not resolve or validate its token when
+# it is configured, only when a resource actually uses it -- and every
+# DigitalOcean resource below is count = 0 in that case.
 provider "digitalocean" {
   token = var.do_token
 }
@@ -69,7 +73,11 @@ locals {
   # server exists. That ordering is what lets the address be baked into the
   # cloud-config, which needs it to derive the nip.io fallback domain.
   public_ip = local.on_aws ? one(aws_eip.eip[*].public_ip) : one(digitalocean_reserved_ip.eip[*].ip_address)
-  server_id = local.on_aws ? one(aws_instance.web_server[*].id) : one(digitalocean_droplet.web_server[*].id)
+
+  # The name the blog falls back to when it has no domain of its own. nip.io
+  # resolves any ghost-sh-1-2-3-4.nip.io back to 1.2.3.4.
+  fallback_domain = "ghost-sh-${replace(local.public_ip, ".", "-")}.nip.io"
+  server_id       = local.on_aws ? one(aws_instance.web_server[*].id) : one(digitalocean_droplet.web_server[*].id)
 
   cloud_config = templatefile(local.path_cloud_config, {
     ghost_admin_email          = var.ghost_admin_email
@@ -81,7 +89,6 @@ locals {
     ghost_admin_password       = random_id.ghost_admin_password.id
     ghost_ssl_staging          = tostring(var.ghost_ssl_staging)
     ghost_ssl_force            = tostring(var.ghost_ssl_force)
-    ghost_ssl_ip_wait          = tostring(var.ghost_ssl_ip_wait)
     ghost_version              = var.ghost_version
     ghost_cli_version          = var.ghost_cli_version
   })

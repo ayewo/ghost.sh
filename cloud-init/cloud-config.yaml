@@ -48,12 +48,17 @@ write_files:
     ghost_admin_password=${ghost_admin_password}
   permissions: '0400'
   owner: root:root
-- path: /run/ghost.sh-mysql-low-memory.cnf
+- path: /etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf
   content: |
     # ghost.sh: keep MySQL's resident footprint small enough to share a 1 GB
     # host with Ghost, Node and nginx. performance_schema is the costly one --
     # a few hundred MB of the default allocation, and nothing a blog reads.
     # The zz- prefix makes this load after Ubuntu's own mysqld.cnf.
+    #
+    # Written to its final path rather than staged: write_files runs in
+    # cloud-init's init stage, well before the final stage installs
+    # mysql-server, so mysqld is trimmed from its very first start -- which is
+    # what matters, the npm peak this defends against coming later still.
     [mysqld]
     performance_schema      = OFF
     innodb_buffer_pool_size = 128M
@@ -83,7 +88,6 @@ write_files:
     ghost_blog_domain=${ghost_blog_domain}
     ghost_ssl_staging=${ghost_ssl_staging}
     ghost_ssl_force=${ghost_ssl_force}
-    ghost_ssl_ip_wait=${ghost_ssl_ip_wait}
     out_dir=/etc/ghost.sh
 
     convertIP2domain() {
@@ -103,85 +107,29 @@ write_files:
         getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | grep -qxF "$2"
     }
 
-    # The address the internet sees us as. A floating address is delivered by
-    # NAT on both clouds, so it never shows up on a local interface and has to
-    # be asked for from outside. Several services, because one of them being
-    # down should not cost us a certificate.
-    current_public_ip() {
-        local url reply
-        for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me/ip; do
-            reply=$(curl -fsS --max-time 10 "$url" 2>/dev/null) || continue
-            reply=$(printf '%s' "$reply" | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -1)
-            if [[ -n "$reply" ]]; then
-                printf '%s' "$reply"
-                return 0
-            fi
-        done
-        return 1
-    }
-
-    # Block until the floating address actually reaches this server.
-    wait_for_public_ip() {
-        local want=$1 limit=$2 got
-        local deadline=$((SECONDS + limit))
-        while (( SECONDS < deadline )); do
-            got=$(current_public_ip) || got=""
-            [[ "$got" == "$want" ]] && return 0
-            sleep 10
-        done
-        return 1
-    }
-
-    using_fallback_domain=0
-
-    # Check if the a valid domain was specified
-    if [[ -n "$ghost_blog_domain" ]]; then
-
-        if domain_points_here "$ghost_blog_domain" "$instance_public_ip"; then
-            echo "The DNS A-record for domain $ghost_blog_domain correctly resolves to the IP of this server: $instance_public_ip."
-        else
-            echo "The DNS A-record for domain $ghost_blog_domain does not resolve to the IP of this server: $instance_public_ip."
-            echo "Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
-            ghost_blog_domain=$(convertIP2domain "$instance_public_ip")
-            using_fallback_domain=1
-        fi
-
-    else
-        echo "No domain was specified. Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
-        ghost_blog_domain=$(convertIP2domain "$instance_public_ip")
-        using_fallback_domain=1
-    fi
-
     # Let's Encrypt counts its rate limits per registered domain, and nip.io is
     # absent from the Public Suffix List -- so every nip.io user on the internet
-    # draws down one shared quota. Asking for a certificate on the fallback
-    # domain therefore fails often, and a failure would take `ghost setup` with
-    # it. Only ask when the blog has a real domain of its own.
+    # draws down one shared quota. Asking for a certificate on a name we invented
+    # ourselves fails often, so only ask when the blog has a real domain.
     ghost_ssl_mode=none
-    if [[ "$using_fallback_domain" -eq 0 ]]; then
-        ghost_ssl_mode=letsencrypt
-    elif [[ "$ghost_ssl_force" == "true" ]]; then
-        echo "ghost_ssl_force is set: requesting a certificate for fallback domain $ghost_blog_domain anyway."
+    if [[ -z "$ghost_blog_domain" ]]; then
+        echo "No domain was specified. Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
+    elif domain_points_here "$ghost_blog_domain" "$instance_public_ip"; then
+        echo "The DNS A-record for domain $ghost_blog_domain correctly resolves to the IP of this server: $instance_public_ip."
         ghost_ssl_mode=letsencrypt
     else
-        echo "Skipping SSL: $ghost_blog_domain is a nip.io fallback domain. Set ghost_ssl_force to request one anyway."
+        echo "The DNS A-record for domain $ghost_blog_domain does not resolve to the IP of this server: $instance_public_ip."
+        echo "Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
     fi
 
-    # Let's Encrypt validates a certificate against whatever answers on the
-    # address the blog's DNS points at, and that is the floating address --
-    # which Terraform can only attach once this server exists. Asking for a
-    # certificate before it arrives gets us a failed challenge, so wait for it.
-    # Bounded, and serving over HTTP is a far better outcome than either hanging
-    # here forever or failing the build.
-    if [[ "$ghost_ssl_mode" != "none" ]]; then
-        echo "Waiting up to $ghost_ssl_ip_wait s for $instance_public_ip to reach this server..."
-        if wait_for_public_ip "$instance_public_ip" "$ghost_ssl_ip_wait"; then
-            echo "This server now answers on $instance_public_ip."
+    # Reaching here with mode none means the blog has no domain of its own.
+    if [[ "$ghost_ssl_mode" == none ]]; then
+        ghost_blog_domain=$(convertIP2domain "$instance_public_ip")
+        if [[ "$ghost_ssl_force" == "true" ]]; then
+            echo "ghost_ssl_force is set: requesting a certificate for fallback domain $ghost_blog_domain anyway."
+            ghost_ssl_mode=letsencrypt
         else
-            echo "Gave up waiting: this server does not answer on $instance_public_ip yet."
-            echo "Serving over HTTP. Once the address is attached, request a certificate with:"
-            echo "  cd /var/www/ghost && ghost setup ssl --sslemail ${ghost_admin_email}"
-            ghost_ssl_mode=none
+            echo "Skipping SSL: $ghost_blog_domain is a nip.io fallback domain. Set ghost_ssl_force to request one anyway."
         fi
     fi
 
@@ -189,18 +137,14 @@ write_files:
         ghost_ssl_mode=letsencrypt-staging
     fi
 
-    # Ghost serves links using the scheme in its url, so that scheme has to match
-    # what nginx will really terminate. Passing a bare domain would leave
-    # Ghost-CLI to assume https:// for any custom domain, which would strand the
-    # blog behind a URL it has no certificate for.
-    if [[ "$ghost_ssl_mode" == "none" ]]; then
-        ghost_blog_url="http://$ghost_blog_domain"
-    else
-        ghost_blog_url="https://$ghost_blog_domain"
-    fi
+    # Configure HTTP whatever the intent. 03_ghost-setup.sh moves the blog to
+    # https only once a certificate is actually in hand, so the blog is never
+    # left advertising a scheme that nothing terminates.
+    ghost_blog_url="http://$ghost_blog_domain"
 
-    # Hand the decision to 03_ghost-setup.sh and to ghost.sh-versions. This file
-    # stays on the box as a record of how the blog was provisioned.
+    # Hand the decision to 03_ghost-setup.sh and to ghost.sh-versions. 03 writes
+    # the outcome back here, so this file records what actually happened rather
+    # than what was intended.
     sudo mkdir -p "$out_dir"
     sudo tee "$out_dir/install.env" > /dev/null <<ENV
     # Written by ghost.sh at provisioning time.
@@ -210,7 +154,7 @@ write_files:
     ENV
     sudo chmod 0644 "$out_dir/install.env"
 
-    echo "Blog URL: $ghost_blog_url (SSL: $ghost_ssl_mode)"
+    echo "Blog domain: $ghost_blog_domain (SSL intent: $ghost_ssl_mode)"
 
     cd /var/www/ghost && ghost config --url "$ghost_blog_url" --ip 127.0.0.1 --port 2368 --log "stdout" --log "file" --db mysql --dbhost localhost --dbname ghost_production --dbuser ghost --dbpass '${ghost_mysql_password}'
   permissions: '0750'
@@ -218,33 +162,58 @@ write_files:
 - path: /run/03_ghost-setup.sh
   content: |
     #!/usr/bin/env bash
-    # ghost.sh script to run `ghost setup`, with a Let's Encrypt certificate
-    # whenever 02_ghost-config-setup.sh found a real domain for the blog.
+    # ghost.sh script to run `ghost setup`, then obtain a Let's Encrypt
+    # certificate if 02_ghost-config-setup.sh found a real domain for the blog.
 
     set -u
 
+    out_dir=/etc/ghost.sh
     # shellcheck disable=SC1091  # written by 02_ghost-config-setup.sh
-    . /etc/ghost.sh/install.env
+    . "$out_dir/install.env"
 
     cd /var/www/ghost || exit 1
 
-    # Under --no-prompt, Ghost-CLI skips SSL unless --sslemail is supplied
+    # Set the blog up over HTTP first, so that it is complete and serving
+    # whatever becomes of the certificate.
+    ghost setup --no-prompt --no-setup-mysql --no-setup-ssl -V
+
+    if [[ "$ghost_ssl_mode" == none ]]; then
+        exit 0
+    fi
+
+    # Under --no-prompt, Ghost-CLI skips SSL entirely unless --sslemail is given
     # ("SSL email must be provided via the --sslemail option, skipping SSL
-    # setup"). That omission is why setup used to finish having quietly
-    # provisioned no certificate at all.
-    case "$ghost_ssl_mode" in
-        letsencrypt)
-            ghost setup --no-prompt --no-setup-mysql --sslemail '${ghost_admin_email}' -V
-            ;;
-        letsencrypt-staging)
-            # Untrusted certificate from Let's Encrypt's staging CA. Useful for
-            # rehearsing a deploy without spending the real rate limit.
-            ghost setup --no-prompt --no-setup-mysql --sslemail '${ghost_admin_email}' --sslstaging -V
-            ;;
-        *)
-            ghost setup --no-prompt --no-setup-mysql --no-setup-ssl -V
-            ;;
-    esac
+    # setup"). That omission is why setup used to report success having quietly
+    # provisioned no certificate at all. Positional parameters rather than an
+    # array: "$@" needs no $${} escaping inside this Terraform template.
+    set -- ssl --no-prompt --sslemail '${ghost_admin_email}' -V
+    if [[ "$ghost_ssl_mode" == letsencrypt-staging ]]; then
+        # Untrusted certificate from Let's Encrypt's staging CA -- rehearses a
+        # deploy without spending the real rate limit.
+        set -- "$@" --sslstaging
+    fi
+
+    # Let the certificate request be the step that decides whether a certificate
+    # is possible, rather than trying to predict it. A challenge can fail for
+    # reasons nothing here can see coming -- DNS still propagating, the floating
+    # address not yet attached, a CAA record, the rate limit -- and every one of
+    # them should leave a working HTTP blog rather than a half-provisioned one.
+    ghost config --url "https://$ghost_blog_domain"
+    if ghost setup "$@"; then
+        ghost_blog_url="https://$ghost_blog_domain"
+    else
+        echo "Certificate request failed; reverting the blog to HTTP."
+        echo "Once the cause is addressed, request one with:"
+        echo "  cd /var/www/ghost && ghost setup ssl --sslemail ${ghost_admin_email}"
+        ghost config --url "$ghost_blog_url"
+        ghost_ssl_mode=none
+    fi
+
+    # Record the outcome so install.env, and the version manifest that reads it,
+    # describe the blog that actually exists.
+    sudo sed -i "s|^ghost_blog_url=.*|ghost_blog_url=$ghost_blog_url|" "$out_dir/install.env"
+    sudo sed -i "s|^ghost_ssl_mode=.*|ghost_ssl_mode=$ghost_ssl_mode|" "$out_dir/install.env"
+    echo "Blog URL: $ghost_blog_url (SSL: $ghost_ssl_mode)"
   permissions: '0750'
   owner: root:root
 - path: /run/04_ghost-admin-setup.sh
@@ -309,27 +278,26 @@ write_files:
         ghost_version=$(json_field ghostVersion "$ghost_json")
     fi
 
-    acme_version=""
-    if [ -x /etc/letsencrypt/acme.sh ]; then
-        acme_version=$(/etc/letsencrypt/acme.sh --version 2>&1 |
-            grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    fi
+    # command -v accepts an absolute path and fails when it is not executable,
+    # so probe covers acme.sh unchanged.
+    acme_version=$(probe /etc/letsencrypt/acme.sh --version)
 
     os_name=""
     os_version=""
     if [ -r /etc/os-release ]; then
-        os_name=$(. /etc/os-release && printf '%s' "$NAME")
-        os_version=$(. /etc/os-release && printf '%s' "$VERSION")
+        # shellcheck disable=SC1091  # distro-provided
+        . /etc/os-release
+        os_name=$NAME
+        os_version=$VERSION
     fi
 
-    # Recorded by 02_ghost-config-setup.sh; absent if that step never ran.
-    blog_url=""
-    ssl_mode=""
+    # Recorded by 02_ghost-config-setup.sh and updated by 03_ghost-setup.sh with
+    # the outcome; absent if those steps never ran.
+    ghost_blog_url=""
+    ghost_ssl_mode=""
     if [ -r "$out_dir/install.env" ]; then
         # shellcheck disable=SC1091  # generated at provisioning time
         . "$out_dir/install.env"
-        blog_url=$ghost_blog_url
-        ssl_mode=$ghost_ssl_mode
     fi
 
     mkdir -p "$out_dir"
@@ -337,8 +305,8 @@ write_files:
     {
       "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
       "blog": {
-        "url": "$blog_url",
-        "ssl": "$ssl_mode"
+        "url": "$ghost_blog_url",
+        "ssl": "$ghost_ssl_mode"
       },
       "os": {
         "name": "$os_name",
@@ -381,10 +349,7 @@ runcmd:
   - chown -R ghost-mgr:ghost-mgr /home/ghost-mgr/tmp/
   - [su, ghost-mgr, -c, "cd /var/www/ghost && ghost install ${ghost_version} --no-setup"]
   
-  # mysql config. Trim MySQL before creating the database so that it starts as
-  # it will go on to run.
-  - install -o root -g root -m 0644 /run/ghost.sh-mysql-low-memory.cnf /etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf
-  - systemctl restart mysql
+  # mysql config
   - mysql < /home/ghost-mgr/tmp/01_ghost-mysql-dba.sql > /home/ghost-mgr/tmp/01_ghost-mysql-dba.out
   
   # ghost config

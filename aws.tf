@@ -27,8 +27,8 @@ data "aws_ami" "ubuntu" {
 resource "aws_eip" "eip" {
   count = local.on_aws ? 1 : 0
 
-  # Comment out this reference as it caused a circular dependency
-  #instance = aws_instance.web_server.id
+  # Deliberately not `instance = ...`: aws_eip_association below attaches this,
+  # which is what keeps the address allocatable before the server exists.
   tags = {
     Name = "${local.instance_name}_elastic-ip"
   }
@@ -53,15 +53,11 @@ resource "aws_instance" "web_server" {
     Name = local.instance_name
   }
 
-  # The provisioning checks run from terraform_data.provisioning_checks in
-  # main.tf, so that the elastic IP is associated before cloud-init needs it.
-  provisioner "local-exec" {
-    command    = "echo The server IP address is ${self.public_ip}."
-    on_failure = continue
-  }
-
-  provisioner "local-exec" {
-    command    = "echo The server [Elastic] IP address is ${aws_eip.eip[0].public_ip} and is about to be associated."
-    on_failure = continue
+  # The AMI is looked up with most_recent, so it changes whenever Canonical
+  # publishes a new Noble image -- and ami forces replacement, which would have a
+  # later routine apply destroy and rebuild a running blog. Rebuild on a new
+  # image only when you ask for it, by tainting or by bumping ami_id.
+  lifecycle {
+    ignore_changes = [ami]
   }
 }
