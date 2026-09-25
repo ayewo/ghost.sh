@@ -29,17 +29,9 @@ die() {
     exit 1
 }
 
-# Sizes come out of du and df in KB. Round MB upwards and keep a decimal on GB,
-# so a small archive reports "1 MB" rather than a useless "0 MB".
+# Sizes come out of du, df and unzip in KB.
 human_kb() {
-    local kb=$1
-    if (( kb < 1024 )); then
-        printf '%d KB' "$kb"
-    elif (( kb < 1048576 )); then
-        printf '%d MB' $(( (kb + 1023) / 1024 ))
-    else
-        printf '%d.%d GB' $(( kb / 1048576 )) $(( (kb % 1048576) * 10 / 1048576 ))
-    fi
+    numfmt --to=iec --from-unit=1024 --suffix=B "$1"
 }
 
 [[ -n "$archive" ]] || die "usage: $0 <backup-archive.zip> [ghost-dir]"
@@ -60,19 +52,17 @@ version=$(ghost version --json 2>/dev/null | grep -oE '"ghostVersion" *: *"[^"]*
 source_version=$(basename "$archive" | sed -nE 's/^backup-from-v([0-9]+\.[0-9]+\.[0-9]+)-on-.*/\1/p') || true
 
 echo "Restoring into Ghost $version at $ghost_dir"
-[[ -n "$source_version" ]] && echo "Archive came from Ghost $source_version"
 
 # Ghost refuses to move more than two majors at once and wants the latest minor
 # of the current major first, so a distant archive needs stepping up before its
 # schema will be accepted. Same major is always fine.
 if [[ -n "$source_version" ]]; then
-    src_major=${source_version%%.*}
-    dst_major=${version%%.*}
-    if (( src_major != dst_major )); then
+    echo "Archive came from Ghost $source_version"
+    if (( ${source_version%%.*} != ${version%%.*} )); then
         echo
-        echo "Note: this archive crosses a major version ($src_major -> $dst_major)."
-        echo "If the import is rejected, restore it onto a Ghost $src_major install first,"
-        echo "step that up with 'ghost update v$src_major' then 'ghost update', and"
+        echo "Note: this archive crosses a major version (${source_version%%.*} -> ${version%%.*})."
+        echo "If the import is rejected, restore it onto a Ghost ${source_version%%.*} install first,"
+        echo "step that up with 'ghost update v${source_version%%.*}' then 'ghost update', and"
         echo "take a fresh backup from there."
         echo
     fi
@@ -82,22 +72,22 @@ if [[ -n "${GHOST_CLI_STAFF_AUTH_TOKEN:-}" && ! "$GHOST_CLI_STAFF_AUTH_TOKEN" =~
     die "GHOST_CLI_STAFF_AUTH_TOKEN is malformed; it must be 24 hex characters, a colon, then 64 hex characters"
 fi
 
-# The archive is briefly on disk three times over: the .zip, the unpacked copy,
-# and the copy landing in content/. Images barely compress, so the unpacked size
-# is close to the archive size -- check before starting rather than running the
-# disk dry halfway through a restore.
+# Room for the unpacked copy, plus a little slack. The content is hard-linked
+# into content/ rather than copied, so it is not paid for twice. Ask the archive
+# what it actually holds rather than assuming a compression ratio -- images
+# barely compress, themes and JSON do.
 archive_kb=$(du -k "$archive" | cut -f1)
+unpacked_kb=$(( $(unzip -Zt "$archive" | awk '{print $3}') / 1024 ))
 avail_kb=$(df -Pk "$ghost_dir" | awk 'NR==2 {print $4}')
-needed_kb=$(( archive_kb * 5 / 2 ))
+needed_kb=$(( unpacked_kb + unpacked_kb / 10 ))
 if (( avail_kb < needed_kb )); then
-    die "not enough free space in $ghost_dir: a $(human_kb "$archive_kb") archive needs about $(human_kb "$needed_kb"), but only $(human_kb "$avail_kb") is available"
+    die "not enough free space in $ghost_dir: unpacking a $(human_kb "$archive_kb") archive needs about $(human_kb "$needed_kb"), but only $(human_kb "$avail_kb") is available"
 fi
 
 # Unpack beside the Ghost install rather than under /tmp. Two reasons, both of
 # which bite on a 1 GB server: systemd mounts /tmp as a tmpfs unless the distro
-# masks it, so a large archive would be unpacked into RAM; and staying on one
-# filesystem makes the copy into content/ a rename-speed operation rather than a
-# second full read and write.
+# masks it, so a large archive would be unpacked into RAM; and being on the same
+# filesystem as content/ is what lets the restore hard-link instead of copy.
 workdir=$(mktemp -d -p "$ghost_dir" .ghost.sh-restore.XXXXXX) || die "cannot create a working directory in $ghost_dir"
 trap 'rm -rf "$workdir"' EXIT
 
@@ -118,12 +108,17 @@ content_owner=$(stat -c '%U:%G' "$content_dir")
 restored=()
 for part in images media files settings themes; do
     [[ -d "$workdir/$part" ]] || continue
-    sudo cp -a "$workdir/$part/." "$content_dir/$part/"
+    # -l hard-links rather than copies. The workdir is on the same filesystem by
+    # construction, so the unpacked bytes become the content bytes with no second
+    # write, and the trap below just drops the extra links. A 2 GB media library
+    # stops costing 2 GB of writes and 2 GB of free space.
+    sudo cp -al "$workdir/$part/." "$content_dir/$part/"
     restored+=("$part")
 done
 
 if (( ${#restored[@]} )); then
-    sudo chown -R "$content_owner" "$content_dir"
+    # Only what was restored, rather than walking the whole content tree.
+    sudo chown -R "$content_owner" "${restored[@]/#/$content_dir/}"
     echo "Restored into content/: ${restored[*]}"
 else
     echo "Archive carried no images, media, files, settings or themes."
@@ -142,8 +137,12 @@ if [[ -n "$members_export" ]]; then
     kept="$ghost_dir/$(basename "$members_export")"
     sudo cp -a "$members_export" "$kept"
     sudo chown "$content_owner" "$kept"
+    # Subscriber email addresses and payment identifiers, which nothing else in
+    # this flow reads -- keep it to its owner, and say to remove it when done.
+    sudo chmod 0600 "$kept"
     echo
     echo "Members were NOT imported -- ghost import only handles content."
     echo "Upload this by hand in Ghost Admin, under Members -> (...) -> Import members:"
     echo "  $kept"
+    echo "It holds subscriber emails and payment identifiers, so delete it afterwards."
 fi

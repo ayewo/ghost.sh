@@ -53,14 +53,20 @@ archive=$(ls -1t "$ghost_dir"/backup-from-v*.zip 2>/dev/null | head -1) || true
 [[ -n "$archive" ]] || die "ghost backup reported success but left no archive in $ghost_dir"
 
 archive_kb=$(du -k "$archive" | cut -f1)
+unpacked_kb=$(( $(unzip -Zt "$archive" | awk '{print $3}') / 1024 ))
+
+human_kb() {
+    numfmt --to=iec --from-unit=1024 --suffix=B "$1"
+}
 
 echo
 echo "Archive: $archive"
-echo "Size:    $(du -h "$archive" | cut -f1)"
-# ghost-restore.sh refuses to start without this much room, because the archive
-# is briefly on disk three times: the .zip, the unpacked copy, and the copy
-# landing in content/. Worth knowing before you migrate onto a smaller server.
-echo "Restore needs about $(( (archive_kb * 5 / 2 + 1023) / 1024 )) MB free on the target."
+echo "Size:    $(human_kb "$archive_kb")"
+# The same figure ghost-restore.sh enforces before it will start: room for the
+# unpacked copy plus slack. It hard-links the content into place rather than
+# copying, so the payload is not paid for twice. Worth knowing before you
+# migrate onto a smaller server.
+echo "Restore needs about $(human_kb $(( unpacked_kb + unpacked_kb / 10 ))) free on the target."
 echo
 echo "Contents:"
 unzip -Z1 "$archive" | awk -F/ '{print $1}' | sort | uniq -c | sort -rn | sed 's/^/  /' || true

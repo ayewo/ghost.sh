@@ -42,19 +42,8 @@ resource "digitalocean_droplet" "web_server" {
   # Free, and the only way to see memory pressure on a 1 GB droplet.
   monitoring = true
 
-  tags = [replace("${var.prefix}_${var.instance_name}", ".", "-")]
-
-  # The provisioning checks run from terraform_data.provisioning_checks in
-  # main.tf, so that the reserved IP is assigned before cloud-init needs it.
-  provisioner "local-exec" {
-    command    = "echo The droplet IP address is ${self.ipv4_address}."
-    on_failure = continue
-  }
-
-  provisioner "local-exec" {
-    command    = "echo The droplet [Reserved] IP address is ${digitalocean_reserved_ip.eip[0].ip_address} and is about to be assigned."
-    on_failure = continue
-  }
+  # DigitalOcean tags reject dots, so the shared name is dashed for this one use.
+  tags = [replace(local.instance_name, ".", "-")]
 }
 
 resource "digitalocean_firewall" "ghost_firewall" {

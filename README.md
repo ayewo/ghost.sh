@@ -133,7 +133,7 @@ Install [Terraform](https://www.terraform.io) on your machine.
 
 The rough memory budget at rest on 1 GB — Ubuntu ~200 MB, MySQL ~300 MB, Ghost under Node ~250 MB, NGINX ~20 MB — leaves little spare, which is what the swapfile is for. Of the 25 GB disk, the swapfile takes 2 GB, so plan on ~23 GB for the system, Ghost and your content.
 
-Outputs are named for the cloud that produced them — `instance_*` on AWS, `droplet_*` on DigitalOcean — and the ones belonging to the cloud you did not pick read `null`. The provider-neutral values are `server_public_ip`, `server_ssh_command` and `server_blog_url`.
+Outputs are named for the cloud that produced them — `instance_*` on AWS, `droplet_*` on DigitalOcean — and the ones belonging to the cloud you did not pick read `null`. The provider-neutral values are `server_public_ip`, `server_ssh_command` and `server_blog_domain`.
 
 
 ## What you get
@@ -165,9 +165,12 @@ Two variables adjust this:
 |---|---|---|
 | `ghost_ssl_staging` | `false` | Issue from Let's Encrypt's staging CA. The certificate is untrusted by browsers, but rehearsing a deploy this way does not spend the production rate limit. |
 | `ghost_ssl_force` | `false` | Request a certificate even on the `nip.io` fallback domain. |
-| `ghost_ssl_ip_wait` | `300` | Seconds to wait for the reserved address to reach the server before asking for a certificate. |
 
-That last one exists because of an ordering problem worth knowing about. Let's Encrypt validates a certificate against whatever answers on the address your DNS points at, and that is the reserved address — which the cloud can only attach once the server exists. So cloud-init waits for the address to arrive before requesting anything. If it never does, the blog is served over HTTP rather than the build hanging or failing, and the log tells you the one command needed to finish the job later.
+The certificate is never a precondition for the blog working. Provisioning sets the blog up over HTTP first, then asks for a certificate and moves it to `https://` only once one is actually in hand. If the request fails — DNS still propagating, the reserved address not yet attached, a CAA record, a rate limit — the blog stays on HTTP, the log names the one command needed to finish the job later, and `/etc/ghost.sh/install.env` records what really happened rather than what was intended.
+
+```bash
+cd /var/www/ghost && ghost setup ssl --sslemail you@example.com
+```
 
 To add a certificate later, point your DNS at the server and then run:
 
@@ -249,14 +252,16 @@ Two scripts in `scripts/` move a self-hosted Ghost blog onto a `ghost.sh` server
 5. **Import the members CSV** in Ghost Admin, using the path the script printed.
 
 ### Before migrating onto a smaller server
-`ghost-backup.sh` prints how much free space the restore will need, and `ghost-restore.sh` refuses to start without it — the archive is briefly on disk three times over, as the `.zip`, the unpacked copy, and the copy landing in `content/`. To check ahead of time, on the old server:
+`ghost-backup.sh` prints how much free space the restore will need, and `ghost-restore.sh` refuses to start without it. Both derive the figure from what the archive actually holds (`unzip -Zt`) rather than assuming a compression ratio, so the two always agree. The content is hard-linked into `content/` rather than copied, so a large media library is neither written twice nor paid for twice in free space. To check ahead of time, on the old server:
 
 ```bash
 du -sh /var/www/ghost/content        # what has to move
 df -h /var/www/ghost                 # what you have now
 ```
 
-The restore unpacks alongside the Ghost install rather than under `/tmp`, which keeps a large archive off a possibly RAM-backed `/tmp` and makes the copy into `content/` stay on one filesystem.
+The restore unpacks alongside the Ghost install rather than under `/tmp`: that keeps a large archive off a possibly RAM-backed `/tmp`, and being on the same filesystem as `content/` is what lets it hard-link instead of copy.
+
+The members CSV is left at mode `0600` because it holds subscriber email addresses and payment identifiers. Delete it once you have uploaded it.
 
 ### Version ladder
 Restoring across major versions has a constraint worth knowing before you start. Ghost requires you to be on the latest minor of your current major, and no more than two majors behind, so an archive from a distant version will be rejected. `ghost-restore.sh` notices when an archive crosses a major and tells you what to do: restore it onto a server running its own major, step that up with `ghost update v<major>` then `ghost update`, and take a fresh backup from there.

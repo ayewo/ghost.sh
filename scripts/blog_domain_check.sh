@@ -1,90 +1,72 @@
 #!/usr/bin/env bash
 #
-# ghost.sh: preview the domain and SSL decision that provisioning would make.
+# ghost.sh: check whether a domain already points at this server, and show the
+# nip.io name that provisioning would fall back to if it does not.
 #
-#     ./blog_domain_check.sh [domain]
-#
-# Mirrors 02_ghost-config-setup.sh in cloud-init/cloud-config.yaml. Run it from
-# the server to check a domain before deploying, or anywhere to see what the
-# fallback would look like.
+#     ./blog_domain_check.sh [domain] [server-address]
 #
 # Cases worth trying:
-#   ./blog_domain_check.sh                     # no domain -> nip.io fallback
+#   ./blog_domain_check.sh                     # no domain -> show the fallback
 #   ./blog_domain_check.sh go.ayewo            # non-existent TLD
 #   ./blog_domain_check.sh guide.ayewo.com     # round-robin, several A records
+#
+# This deliberately does NOT predict whether a certificate will be issued.
+# Provisioning decides that by asking Let's Encrypt and keeping the answer in
+# /etc/ghost.sh/install.env; anything here would be a guess that drifts.
 #
 set -uo pipefail
 
 ghost_blog_domain=${1:-}
-ghost_ssl_force=${ghost_ssl_force:-false}
+server_address=${2:-}
 
-# The address the internet sees us as. A floating address is delivered by NAT on
-# both clouds, so it never shows up on a local interface.
-instance_public_ip=""
-for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me/ip; do
-    reply=$(curl -fsS --max-time 10 "$url" 2>/dev/null) || continue
-    reply=$(printf '%s' "$reply" | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -1)
-    if [[ -n "$reply" ]]; then
-        instance_public_ip=$reply
-        break
-    fi
-done
-[[ -n "$instance_public_ip" ]] || { echo "Could not determine this host's public IP." >&2; exit 1; }
+# Without an explicit address, ask what the internet sees this host as. Note this
+# is the *egress* address: on a DigitalOcean droplet holding a reserved IP, that
+# is the droplet's own address rather than the reserved one, unless the default
+# route has been repointed at the anchor gateway. Pass the address as the second
+# argument to check against a floating address.
+if [[ -z "$server_address" ]]; then
+    for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me/ip; do
+        reply=$(curl -fsS --connect-timeout 3 --max-time 5 "$url" 2>/dev/null) || continue
+        reply=$(printf '%s' "$reply" | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | head -1)
+        if [[ -n "$reply" ]]; then
+            server_address=$reply
+            break
+        fi
+    done
+fi
+[[ -n "$server_address" ]] || { echo "Could not determine this host's public address; pass it as the second argument." >&2; exit 1; }
 
-convertIP2domain() {
-    # This will convert  19.70.1.1 to ghost-sh-19-70-1-1.nip.io.
-    local domain=$(echo "$1" | sed 's/\./-/g')
-
-    # Add the prefix and suffix to the domain
-    domain="ghost-sh-$domain.nip.io"
-
-    echo "$domain"
-}
-
-# True when one of the domain's A records is this server. Testing for membership
-# rather than equality is what lets a round-robin domain resolve correctly.
-domain_points_here() {
-    getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | grep -qxF "$2"
-}
+# 19.70.1.1 -> ghost-sh-19-70-1-1.nip.io, which resolves back to 19.70.1.1.
+fallback_domain="ghost-sh-$(echo "$server_address" | sed 's/\./-/g').nip.io"
 
 resolved=""
-using_fallback_domain=0
-
+points_here=no
 if [[ -n "$ghost_blog_domain" ]]; then
-    resolved=$(getent ahostsv4 "$ghost_blog_domain" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd' ' -)
-
-    if domain_points_here "$ghost_blog_domain" "$instance_public_ip"; then
-        echo "The DNS A-record for domain $ghost_blog_domain correctly resolves to the IP of this server: $instance_public_ip."
-    else
-        echo "The DNS A-record for domain $ghost_blog_domain does not resolve to the IP of this server: $instance_public_ip."
-        echo "Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
-        ghost_blog_domain=$(convertIP2domain "$instance_public_ip")
-        using_fallback_domain=1
+    # Resolved once, then tested for membership: a round-robin domain has several
+    # A records and only one of them needs to be us.
+    resolved=$(getent ahostsv4 "$ghost_blog_domain" 2>/dev/null | awk '{print $1}' | sort -u)
+    if grep -qxF "$server_address" <<< "$resolved"; then
+        points_here=yes
     fi
-else
-    echo "No domain was specified. Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
-    ghost_blog_domain=$(convertIP2domain "$instance_public_ip")
-    using_fallback_domain=1
 fi
 
-# Let's Encrypt counts its rate limits per registered domain, and nip.io is
-# absent from the Public Suffix List, so every nip.io user shares one quota.
-ghost_ssl_mode=none
-if [[ "$using_fallback_domain" -eq 0 ]]; then
-    ghost_ssl_mode=letsencrypt
-elif [[ "$ghost_ssl_force" == "true" ]]; then
-    ghost_ssl_mode=letsencrypt
+resolved_flat="(none)"
+if [[ -n "$resolved" ]]; then
+    resolved_flat=$(echo $resolved | tr '\n' ' ')
 fi
 
-if [[ "$ghost_ssl_mode" == "none" ]]; then
-    ghost_blog_url="http://$ghost_blog_domain"
+if [[ -z "$ghost_blog_domain" ]]; then
+    echo "No domain given. Provisioning would use the nip.io fallback."
+elif [[ "$points_here" == yes ]]; then
+    echo "The DNS A-record for domain $ghost_blog_domain correctly resolves to the IP of this server: $server_address."
 else
-    ghost_blog_url="https://$ghost_blog_domain"
+    echo "The DNS A-record for domain $ghost_blog_domain does not resolve to the IP of this server: $server_address."
+    echo "Provisioning would use the nip.io fallback instead."
 fi
 
 echo
-echo "Domain:              $ghost_blog_domain"
-echo "Domain IP Address:   ${resolved:-(none)}"
-echo "Instance IP Address: $instance_public_ip"
-echo "Blog URL:            $ghost_blog_url"
-echo "SSL:                 $ghost_ssl_mode"
+echo "Server address:    $server_address"
+echo "Domain:            ${ghost_blog_domain:-(none given)}"
+echo "Domain A-records:  $resolved_flat"
+echo "Points at server:  $points_here"
+echo "nip.io fallback:   $fallback_domain"

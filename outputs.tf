@@ -23,9 +23,9 @@ output "server_ssh_command" {
   value       = "ssh -i ${var.ghost_admin_ssh_private_key} ${var.ghost_admin}@${local.public_ip}"
 }
 
-output "server_blog_url" {
-  description = "Where your blog is reachable. ghost.sh only serves this over https:// once a certificate was issued, so read /etc/ghost.sh/install.env on the server for the URL it actually configured."
-  value       = var.ghost_blog_domain != "" ? "https://${var.ghost_blog_domain}" : "http://ghost-sh-${replace(local.public_ip, ".", "-")}.nip.io"
+output "server_blog_domain" {
+  description = "The domain your blog will answer on -- yours if its DNS points at the server, otherwise a nip.io name derived from the reserved address. Whether it is served over http:// or https:// is settled on the server by whether a certificate was obtained, and recorded in /etc/ghost.sh/install.env, which terraform apply prints."
+  value       = var.ghost_blog_domain != "" ? var.ghost_blog_domain : local.fallback_domain
 }
 
 
@@ -73,46 +73,14 @@ output "instance_security_group_id_name" {
   value       = local.on_aws ? "${one(aws_security_group.ghost_security_group[*].name)} ${var.output_suffix}" : null
 }
 
-
-output "instance_sg_rule1_id" {
-  description = "AWS-assigned ID for rule #1 in the security group."
-  value       = one(aws_security_group_rule.ingress80[*].id)
-}
-
-output "instance_sg_rule2_id" {
-  description = "AWS-assigned ID for rule #2 in the security group."
-  value       = one(aws_security_group_rule.ingress443[*].id)
-}
-
-output "instance_sg_rule3_id" {
-  description = "AWS-assigned ID for rule #3 in the security group."
-  value       = one(aws_security_group_rule.ingress22[*].id)
-}
-
-output "instance_sg_rule4_id" {
-  description = "AWS-assigned ID for rule #4 in the security group."
-  value       = one(aws_security_group_rule.egressAny[*].id)
-}
-
-
-output "instance_sg_rule1_name" {
-  description = "Human-readable name for rule #1 in the security group."
-  value       = one(aws_ec2_tag.ghost_security_group_rule_tag1[*].value)
-}
-
-output "instance_sg_rule2_name" {
-  description = "Human-readable name for rule #2 in the security group."
-  value       = one(aws_ec2_tag.ghost_security_group_rule_tag2[*].value)
-}
-
-output "instance_sg_rule3_name" {
-  description = "Human-readable name for rule #3 in the security group."
-  value       = one(aws_ec2_tag.ghost_security_group_rule_tag3[*].value)
-}
-
-output "instance_sg_rule4_name" {
-  description = "Human-readable name for rule #4 in the security group."
-  value       = one(aws_ec2_tag.ghost_security_group_rule_tag4[*].value)
+output "instance_sg_rules" {
+  description = "AWS-assigned IDs and Name tags for the security group rules, keyed by what each rule opens."
+  value = local.on_aws ? {
+    ingress_80  = { id = aws_security_group_rule.ingress80[0].id, name = aws_ec2_tag.ghost_security_group_rule_tag1[0].value }
+    ingress_443 = { id = aws_security_group_rule.ingress443[0].id, name = aws_ec2_tag.ghost_security_group_rule_tag2[0].value }
+    ingress_22  = { id = aws_security_group_rule.ingress22[0].id, name = aws_ec2_tag.ghost_security_group_rule_tag3[0].value }
+    egress_any  = { id = aws_security_group_rule.egressAny[0].id, name = aws_ec2_tag.ghost_security_group_rule_tag4[0].value }
+  } : null
 }
 
 
