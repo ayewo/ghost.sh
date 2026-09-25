@@ -22,14 +22,21 @@ package_update: true
 # Update installed packages
 package_upgrade: true
 
-# Downloads the golang package
+# Ghost's upgrade guide asks for RAM or swap headroom before installing, and the
+# npm install is where the peak sits. Required on a 1 GB host; harmless above it.
+swap:
+  filename: /swapfile
+  size: 2G
+  maxsize: 2G
+
+# Ghost-CLI provisions TLS certificates with acme.sh, which it downloads itself
+# into /etc/letsencrypt -- so there is no certbot in this list.
 packages:
   - net-tools
   - zip
+  - unzip
   - tree
   - nginx
-  - certbot 
-  - python3-certbot
   - mysql-server
   - pwgen
 
@@ -40,6 +47,23 @@ write_files:
     ghost_mysql_password=${ghost_mysql_password}
     ghost_admin_password=${ghost_admin_password}
   permissions: '0400'
+  owner: root:root
+- path: /etc/mysql/mysql.conf.d/zz-ghost.sh-low-memory.cnf
+  content: |
+    # ghost.sh: keep MySQL's resident footprint small enough to share a 1 GB
+    # host with Ghost, Node and nginx. performance_schema is the costly one --
+    # a few hundred MB of the default allocation, and nothing a blog reads.
+    # The zz- prefix makes this load after Ubuntu's own mysqld.cnf.
+    #
+    # Written to its final path rather than staged: write_files runs in
+    # cloud-init's init stage, well before the final stage installs
+    # mysql-server, so mysqld is trimmed from its very first start -- which is
+    # what matters, the npm peak this defends against coming later still.
+    [mysqld]
+    performance_schema      = OFF
+    innodb_buffer_pool_size = 128M
+    max_connections         = 40
+  permissions: '0644'
   owner: root:root
 - path: /run/01_ghost-mysql-dba.sql
   content: |
@@ -54,14 +78,19 @@ write_files:
   owner: root:root
 - path: /run/02_ghost-config-setup.sh
   content: |
-    # ghost.sh script to setup the configuration file for Ghost
+    #!/usr/bin/env bash
+    # ghost.sh script to settle the blog's URL and whether it can carry TLS,
+    # then write the Ghost configuration file.
 
-    #instance_public_ip=$(curl -s http://checkip.amazonaws.com)
+    set -u
+
     instance_public_ip=${ghost_elastic_ip}
     ghost_blog_domain=${ghost_blog_domain}
-    ghost_blog_ip=""
+    ghost_ssl_staging=${ghost_ssl_staging}
+    ghost_ssl_force=${ghost_ssl_force}
+    out_dir=/etc/ghost.sh
 
-    function convertIP2domain() {
+    convertIP2domain() {
         # This will convert  19.70.1.1 to ghost-sh-19-70-1-1.nip.io.
         local domain=$(echo "$1" | sed 's/\./-/g')
 
@@ -71,34 +100,125 @@ write_files:
         echo "$domain"
     }
 
-    # Check if the a valid domain was specified
-    if [[ -n "$ghost_blog_domain" ]]; then
+    # True when one of the domain's A records is this server. Testing for
+    # membership rather than equality is what lets a round-robin domain (several
+    # A records, only one of them us) resolve correctly.
+    domain_points_here() {
+        getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | grep -qxF "$2"
+    }
 
-        # Run nslookup and store the output in a variable
-        output=$(nslookup $ghost_blog_domain | sed -n '3,6p')
-
-        # Extract the IP address using grep and awk
-        ghost_blog_ip=$(echo "$output" | grep "Address:" | awk '{print $2}')
-
-        
-        if [[ "$ghost_blog_ip" = "$instance_public_ip" ]]; then
-            echo "The DNS A-record for domain $ghost_blog_domain correctly resolves to the IP of this server: $instance_public_ip."
-        else
-            echo "The DNS A-record for domain $ghost_blog_domain does not resolve to the IP of this server: $instance_public_ip."
-            echo "Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
-            ghost_blog_domain=$(convertIP2domain $instance_public_ip)
-        fi
-
-    else
+    # Let's Encrypt counts its rate limits per registered domain, and nip.io is
+    # absent from the Public Suffix List -- so every nip.io user on the internet
+    # draws down one shared quota. Asking for a certificate on a name we invented
+    # ourselves fails often, so only ask when the blog has a real domain.
+    ghost_ssl_mode=none
+    if [[ -z "$ghost_blog_domain" ]]; then
         echo "No domain was specified. Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
-        ghost_blog_domain=$(convertIP2domain $instance_public_ip)
+    elif domain_points_here "$ghost_blog_domain" "$instance_public_ip"; then
+        echo "The DNS A-record for domain $ghost_blog_domain correctly resolves to the IP of this server: $instance_public_ip."
+        ghost_ssl_mode=letsencrypt
+    else
+        echo "The DNS A-record for domain $ghost_blog_domain does not resolve to the IP of this server: $instance_public_ip."
+        echo "Will use nip.io to 'create' a domain based on the server's public IP: $instance_public_ip."
     fi
-    
-    cd /var/www/ghost && ghost config --url $ghost_blog_domain --ip 127.0.0.1 --port 2368 --log "stdout" --log "file" --db mysql --dbhost localhost --dbname ghost_production --dbuser ghost --dbpass ${ghost_mysql_password}
+
+    # Reaching here with mode none means the blog has no domain of its own.
+    if [[ "$ghost_ssl_mode" == none ]]; then
+        ghost_blog_domain=$(convertIP2domain "$instance_public_ip")
+        if [[ "$ghost_ssl_force" == "true" ]]; then
+            echo "ghost_ssl_force is set: requesting a certificate for fallback domain $ghost_blog_domain anyway."
+            ghost_ssl_mode=letsencrypt
+        else
+            echo "Skipping SSL: $ghost_blog_domain is a nip.io fallback domain. Set ghost_ssl_force to request one anyway."
+        fi
+    fi
+
+    if [[ "$ghost_ssl_mode" == "letsencrypt" && "$ghost_ssl_staging" == "true" ]]; then
+        ghost_ssl_mode=letsencrypt-staging
+    fi
+
+    # Configure HTTP whatever the intent. 03_ghost-setup.sh moves the blog to
+    # https only once a certificate is actually in hand, so the blog is never
+    # left advertising a scheme that nothing terminates.
+    ghost_blog_url="http://$ghost_blog_domain"
+
+    # Hand the decision to 03_ghost-setup.sh and to ghost.sh-versions. 03 writes
+    # the outcome back here, so this file records what actually happened rather
+    # than what was intended.
+    sudo mkdir -p "$out_dir"
+    sudo tee "$out_dir/install.env" > /dev/null <<ENV
+    # Written by ghost.sh at provisioning time.
+    ghost_blog_domain=$ghost_blog_domain
+    ghost_blog_url=$ghost_blog_url
+    ghost_ssl_mode=$ghost_ssl_mode
+    ENV
+    sudo chmod 0644 "$out_dir/install.env"
+
+    echo "Blog domain: $ghost_blog_domain (SSL intent: $ghost_ssl_mode)"
+
+    cd /var/www/ghost && ghost config --url "$ghost_blog_url" --ip 127.0.0.1 --port 2368 --log "stdout" --log "file" --db mysql --dbhost localhost --dbname ghost_production --dbuser ghost --dbpass '${ghost_mysql_password}'
   permissions: '0750'
   owner: root:root
-- path: /run/03_ghost-admin-setup.sh
+- path: /run/03_ghost-setup.sh
   content: |
+    #!/usr/bin/env bash
+    # ghost.sh script to run `ghost setup`, then obtain a Let's Encrypt
+    # certificate if 02_ghost-config-setup.sh found a real domain for the blog.
+
+    set -u
+
+    out_dir=/etc/ghost.sh
+    # shellcheck disable=SC1091  # written by 02_ghost-config-setup.sh
+    . "$out_dir/install.env"
+
+    cd /var/www/ghost || exit 1
+
+    # Set the blog up over HTTP first, so that it is complete and serving
+    # whatever becomes of the certificate.
+    ghost setup --no-prompt --no-setup-mysql --no-setup-ssl -V
+
+    if [[ "$ghost_ssl_mode" == none ]]; then
+        exit 0
+    fi
+
+    # Under --no-prompt, Ghost-CLI skips SSL entirely unless --sslemail is given
+    # ("SSL email must be provided via the --sslemail option, skipping SSL
+    # setup"). That omission is why setup used to report success having quietly
+    # provisioned no certificate at all. Positional parameters rather than an
+    # array: "$@" needs no $${} escaping inside this Terraform template.
+    set -- ssl --no-prompt --sslemail '${ghost_admin_email}' -V
+    if [[ "$ghost_ssl_mode" == letsencrypt-staging ]]; then
+        # Untrusted certificate from Let's Encrypt's staging CA -- rehearses a
+        # deploy without spending the real rate limit.
+        set -- "$@" --sslstaging
+    fi
+
+    # Let the certificate request be the step that decides whether a certificate
+    # is possible, rather than trying to predict it. A challenge can fail for
+    # reasons nothing here can see coming -- DNS still propagating, the floating
+    # address not yet attached, a CAA record, the rate limit -- and every one of
+    # them should leave a working HTTP blog rather than a half-provisioned one.
+    ghost config --url "https://$ghost_blog_domain"
+    if ghost setup "$@"; then
+        ghost_blog_url="https://$ghost_blog_domain"
+    else
+        echo "Certificate request failed; reverting the blog to HTTP."
+        echo "Once the cause is addressed, request one with:"
+        echo "  cd /var/www/ghost && ghost setup ssl --sslemail ${ghost_admin_email}"
+        ghost config --url "$ghost_blog_url"
+        ghost_ssl_mode=none
+    fi
+
+    # Record the outcome so install.env, and the version manifest that reads it,
+    # describe the blog that actually exists.
+    sudo sed -i "s|^ghost_blog_url=.*|ghost_blog_url=$ghost_blog_url|" "$out_dir/install.env"
+    sudo sed -i "s|^ghost_ssl_mode=.*|ghost_ssl_mode=$ghost_ssl_mode|" "$out_dir/install.env"
+    echo "Blog URL: $ghost_blog_url (SSL: $ghost_ssl_mode)"
+  permissions: '0750'
+  owner: root:root
+- path: /run/04_ghost-admin-setup.sh
+  content: |
+    #!/usr/bin/env bash
     # ghost.sh script to automate setting a secure password for the Ghost Admin user
 
     curl -s 'http://localhost:2368/ghost/api/admin/authentication/setup/' \
@@ -114,23 +234,120 @@ write_files:
     --data-binary '{"setup":[{"name":"Ghost Admin","email":"${ghost_admin_email}","password":"${ghost_admin_password}","blogTitle":"${ghost_blog_name}"}]}'
   permissions: '0750'
   owner: root:root
+- path: /usr/local/bin/ghost.sh-versions
+  content: |
+    #!/usr/bin/env bash
+    # ghost.sh: record the versions of the stack that was provisioned.
+    #
+    # Left on the box on purpose: re-run it after a `ghost update` to refresh
+    # the manifest. Never exits non-zero -- a tool that failed to install is
+    # reported as an empty string rather than aborting the provisioning run.
+
+    ghost_dir=/var/www/ghost
+    ghost_user=ghost-mgr
+    out_dir=/etc/ghost.sh
+    out=$out_dir/versions.json
+
+    # First version-shaped token in a command's output. Both nginx and mysql
+    # print theirs on stderr, hence the 2>&1.
+    probe() {
+        local bin=$1
+        shift
+        command -v "$bin" >/dev/null 2>&1 || return 0
+        "$bin" "$@" 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
+    }
+
+    # Pull one string field out of a JSON object without needing jq.
+    json_field() {
+        printf '%s' "$2" | grep -oE "\"$1\" *: *\"[^\"]*\"" | sed -E 's/.*: *"(.*)"/\1/'
+    }
+
+    nginx_version=$(probe nginx -v)
+    mysql_version=$(probe mysql --version)
+    node_version=$(probe node --version)
+    npm_version=$(probe npm --version)
+
+    # `ghost version --json` prints {"cliVersion":..,"ghostVersion":..,"dir":..}
+    # and is the only source that knows the version actually installed, rather
+    # than whichever one npm would hand out today.
+    ghost_cli_version=""
+    ghost_version=""
+    if [ -d "$ghost_dir" ]; then
+        ghost_json=$(su "$ghost_user" -c "cd $ghost_dir && ghost version --json" 2>/dev/null)
+        ghost_cli_version=$(json_field cliVersion "$ghost_json")
+        ghost_version=$(json_field ghostVersion "$ghost_json")
+    fi
+
+    # command -v accepts an absolute path and fails when it is not executable,
+    # so probe covers acme.sh unchanged.
+    acme_version=$(probe /etc/letsencrypt/acme.sh --version)
+
+    os_name=""
+    os_version=""
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091  # distro-provided
+        . /etc/os-release
+        os_name=$NAME
+        os_version=$VERSION
+    fi
+
+    # Recorded by 02_ghost-config-setup.sh and updated by 03_ghost-setup.sh with
+    # the outcome; absent if those steps never ran.
+    ghost_blog_url=""
+    ghost_ssl_mode=""
+    if [ -r "$out_dir/install.env" ]; then
+        # shellcheck disable=SC1091  # generated at provisioning time
+        . "$out_dir/install.env"
+    fi
+
+    mkdir -p "$out_dir"
+    cat > "$out" <<JSON
+    {
+      "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+      "blog": {
+        "url": "$ghost_blog_url",
+        "ssl": "$ghost_ssl_mode"
+      },
+      "os": {
+        "name": "$os_name",
+        "version": "$os_version",
+        "kernel": "$(uname -r)"
+      },
+      "versions": {
+        "nginx": "$nginx_version",
+        "mysql": "$mysql_version",
+        "node": "$node_version",
+        "npm": "$npm_version",
+        "ghost-cli": "$ghost_cli_version",
+        "ghost": "$ghost_version",
+        "acme.sh": "$acme_version"
+      }
+    }
+    JSON
+
+    chmod 0644 "$out"
+    cat "$out"
+  permissions: '0755'
+  owner: root:root
 
 
 
 # Check that all dependencies are present
 runcmd:
-  # Add the NodeSource APT repository for Node 16
-  - curl -sL https://deb.nodesource.com/setup_16.x | sudo -E bash
-  - apt install nodejs -y 
-  - npm install ghost-cli@latest -g
+  # Add the NodeSource APT repository for Node 22. Ghost ${ghost_version}
+  # declares node ^22.23.1 || ^24.20.0, and 22 is the version Ghost's own
+  # install guide uses. runcmd is already root, so this needs no sudo.
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+  - npm install -g ghost-cli@${ghost_cli_version}
   - mkdir -p /var/www/ghost
   - chown ghost-mgr:ghost-mgr /var/www/ghost
   - chmod 775 /var/www/ghost
 
   - mkdir -p /home/ghost-mgr/tmp
-  - cp /run/0[1-3]_ghost*.* /home/ghost-mgr/tmp
+  - cp /run/0[1-4]_ghost*.* /home/ghost-mgr/tmp
   - chown -R ghost-mgr:ghost-mgr /home/ghost-mgr/tmp/
-  - [su, ghost-mgr, -c, "cd /var/www/ghost && ghost install --no-setup"]
+  - [su, ghost-mgr, -c, "cd /var/www/ghost && ghost install ${ghost_version} --no-setup"]
   
   # mysql config
   - mysql < /home/ghost-mgr/tmp/01_ghost-mysql-dba.sql > /home/ghost-mgr/tmp/01_ghost-mysql-dba.out
@@ -138,11 +355,11 @@ runcmd:
   # ghost config
   - su ghost-mgr -c "/home/ghost-mgr/tmp/02_ghost-config-setup.sh"
   
-  # ghost setup [***TODO SSL cert***]
-  - su ghost-mgr -c "cd /var/www/ghost && ghost setup --no-prompt --no-setup-mysql -V"
+  # ghost setup, including the Let's Encrypt certificate
+  - su ghost-mgr -c "/home/ghost-mgr/tmp/03_ghost-setup.sh"
 
   # ghost admin password setup
-  - su ghost-mgr -c "/home/ghost-mgr/tmp/03_ghost-admin-setup.sh"
+  - su ghost-mgr -c "/home/ghost-mgr/tmp/04_ghost-admin-setup.sh"
 
   # ghost restart
   - su ghost-mgr -c "cd /var/www/ghost && ghost restart"
@@ -151,14 +368,9 @@ runcmd:
   - su ghost-mgr -c "cd /var/www/ghost && ghost buster"
   
   # ghost-mgr account clean up
-  - rm -rf /run/0[1-3]_ghost*.*
-  - rm -rf /home/ghost-mgr/tmp/0[1-3]_ghost*.*
+  - rm -rf /run/0[1-4]_ghost*.*
+  - rm -rf /home/ghost-mgr/tmp/0[1-4]_ghost*.*
 
 
-  # TODO: Write out installed version numbers to a file
-  - nginx -v
-  - certbot --version
-  - mysql --version
-  - node --version && npm --version
-  - su ghost-mgr -c "ghost --version"
-  - su ghost-mgr -c "ghost ls"
+  # Record what was installed to /etc/ghost.sh/versions.json
+  - /usr/local/bin/ghost.sh-versions
